@@ -37,6 +37,3 @@ Thumbs.db
 *.json
 firebase_admin_sdk.json
 pesapal_config.json
-
-# Local config
-config.py
