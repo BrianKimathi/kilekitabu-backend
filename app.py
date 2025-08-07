@@ -52,7 +52,7 @@ def check_credit_required(f):
         user_id = request.user_id
         
         # Get user data from Realtime Database
-        user_ref = db.reference(f'users/{user_id}')
+        user_ref = db.reference(f'registeredUser/{user_id}')
         user_data = user_ref.get()
         
         if not user_data:
@@ -102,11 +102,30 @@ def health_check():
 def get_credit_info():
     """Get user's credit information"""
     user_id = request.user_id
-    user_ref = db.reference(f'users/{user_id}')
+    user_ref = db.reference(f'registeredUser/{user_id}')
     user_data = user_ref.get()
     
     if not user_data:
-        return jsonify({'error': 'User not found'}), 404
+        # Auto-register user if they don't exist
+        try:
+            user_info = auth.get_user(user_id)
+            current_time = datetime.datetime.now(datetime.timezone.utc)
+            
+            # Create user record
+            user_data = {
+                'user_id': user_id,
+                'email': user_info.email,
+                'registration_date': current_time.isoformat(),
+                'credit_balance': 0,
+                'total_payments': 0,
+                'created_at': current_time.isoformat(),
+                'updated_at': current_time.isoformat()
+            }
+            
+            user_ref.set(user_data)
+            
+        except Exception as e:
+            return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
     
     registration_date_str = user_data.get('registration_date')
     
@@ -134,7 +153,7 @@ def get_credit_info():
 def get_client_info():
     """Get client information (alias for credit info)"""
     user_id = request.user_id
-    user_ref = db.reference(f'users/{user_id}')
+    user_ref = db.reference(f'registeredUser/{user_id}')
     user_data = user_ref.get()
     
     if not user_data:
@@ -245,7 +264,7 @@ def confirm_payment():
         })
         
         # Add credit to user
-        user_ref = db.reference(f'users/{user_id}')
+        user_ref = db.reference(f'registeredUser/{user_id}')
         user_data = user_ref.get()
         
         current_credit = user_data.get('credit_balance', 0)
@@ -307,7 +326,7 @@ def pesapal_ipn():
     
     if status == 'COMPLETED':
         # Add credit to user
-        user_ref = db.reference(f'users/{user_id}')
+        user_ref = db.reference(f'registeredUser/{user_id}')
         user_data = user_ref.get()
         
         current_credit = user_data.get('credit_balance', 0)
@@ -351,7 +370,7 @@ def check_payment_status(payment_id):
                 })
                 
                 # Add credit to user
-                user_ref = db.reference(f'users/{user_id}')
+                user_ref = db.reference(f'registeredUser/{user_id}')
                 user_data = user_ref.get()
                 
                 current_credit = user_data.get('credit_balance', 0)
@@ -386,7 +405,7 @@ def record_usage():
     usage_data = request.json
     action_type = usage_data.get('action_type')  # e.g., 'add_debt', 'view_debt', etc.
     
-    user_ref = db.reference(f'users/{user_id}')
+    user_ref = db.reference(f'registeredUser/{user_id}')
     user_data = user_ref.get()
     
     current_date = datetime.datetime.now(datetime.timezone.utc)
