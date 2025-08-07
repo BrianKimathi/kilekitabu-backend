@@ -60,7 +60,8 @@ class PesaPalIntegration:
             print("Failed to get PesaPal access token")
             return None
         
-        url = f"{self.base_url}/api/PostPesapalDirectOrderV4"
+        # Use the correct PesaPal API 3.0 endpoint
+        url = f"{self.base_url}/api/Transactions/SubmitOrderRequest"
         headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
@@ -74,6 +75,7 @@ class PesaPalIntegration:
             'amount': payment_data['amount'],
             'description': f"KileKitabu Credit - {payment_data['credit_days']} days",
             'callback_url': f"{Config.BASE_URL}/api/payment/callback",
+            'redirect_mode': 'TOP_WINDOW',
             'notification_id': payment_data['payment_id'],
             'billing_address': {
                 'email_address': payment_data.get('email', ''),
@@ -100,6 +102,7 @@ class PesaPalIntegration:
             response.raise_for_status()
             
             result = response.json()
+            print(f"PesaPal result: {result}")
             return {
                 'payment_url': result.get('redirect_url'),
                 'order_tracking_id': result.get('order_tracking_id'),
