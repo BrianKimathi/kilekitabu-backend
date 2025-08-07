@@ -22,7 +22,7 @@ class Config:
     # PesaPal Configuration
     PESAPAL_CONSUMER_KEY = os.environ.get('PESAPAL_CONSUMER_KEY')
     PESAPAL_CONSUMER_SECRET = os.environ.get('PESAPAL_CONSUMER_SECRET')
-    PESAPAL_BASE_URL = os.environ.get('PESAPAL_BASE_URL') or 'https://www.pesapal.com'
+    PESAPAL_BASE_URL = os.environ.get('PESAPAL_BASE_URL') or 'https://cybqa.pesapal.com/pesapalv3'  # Sandbox URL
     
     # App Configuration
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'

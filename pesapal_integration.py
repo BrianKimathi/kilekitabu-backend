@@ -13,7 +13,7 @@ class PesaPalIntegration:
         self.token_expiry = None
     
     def _get_access_token(self):
-        """Get access token from PesaPal"""
+        """Get access token from PesaPal API 3.0"""
         if self.access_token and self.token_expiry and time.time() < self.token_expiry:
             return self.access_token
         
@@ -28,8 +28,15 @@ class PesaPalIntegration:
             'consumer_secret': self.consumer_secret
         }
         
+        print(f"Getting PesaPal access token from: {url}")
+        print(f"Consumer key: {self.consumer_key[:10]}...")
+        print(f"Consumer secret: {self.consumer_secret[:10]}...")
+        
         try:
             response = requests.post(url, headers=headers, json=data)
+            print(f"Token request status: {response.status_code}")
+            print(f"Token response: {response.text}")
+            
             response.raise_for_status()
             
             result = response.json()
@@ -37,15 +44,20 @@ class PesaPalIntegration:
             # Token expires in 1 hour
             self.token_expiry = time.time() + 3600
             
+            print(f"Access token obtained: {self.access_token[:20]}...")
             return self.access_token
+        except requests.exceptions.RequestException as e:
+            print(f"Request error getting access token: {e}")
+            return None
         except Exception as e:
             print(f"Error getting access token: {e}")
             return None
     
     def create_payment_request(self, payment_data):
-        """Create a payment request with PesaPal"""
+        """Create a payment request with PesaPal API 3.0"""
         token = self._get_access_token()
         if not token:
+            print("Failed to get PesaPal access token")
             return None
         
         url = f"{self.base_url}/api/PostPesapalDirectOrderV4"
@@ -55,7 +67,7 @@ class PesaPalIntegration:
             'Authorization': f'Bearer {token}'
         }
         
-        # Prepare payment data
+        # Prepare payment data for API 3.0
         payment_request = {
             'id': payment_data['payment_id'],
             'currency': 'KES',
@@ -77,8 +89,14 @@ class PesaPalIntegration:
         if payment_method and payment_method != 'ALL':
             payment_request['payment_method'] = payment_method
         
+        print(f"Making PesaPal request to: {url}")
+        print(f"Request data: {payment_request}")
+        
         try:
             response = requests.post(url, headers=headers, json=payment_request)
+            print(f"PesaPal response status: {response.status_code}")
+            print(f"PesaPal response: {response.text}")
+            
             response.raise_for_status()
             
             result = response.json()
@@ -87,12 +105,15 @@ class PesaPalIntegration:
                 'order_tracking_id': result.get('order_tracking_id'),
                 'status': 'pending'
             }
+        except requests.exceptions.RequestException as e:
+            print(f"Request error creating payment request: {e}")
+            return None
         except Exception as e:
             print(f"Error creating payment request: {e}")
             return None
     
     def check_payment_status(self, order_tracking_id):
-        """Check payment status from PesaPal"""
+        """Check payment status from PesaPal API 3.0"""
         token = self._get_access_token()
         if not token:
             return None
