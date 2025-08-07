@@ -7,7 +7,7 @@ import uuid
 from functools import wraps
 import os
 from config import Config
-from pesapal_integration import PesaPalIntegration
+from pesapal_integration_v2 import PesaPalIntegration
 
 app = Flask(__name__)
 app.config.from_object(Config)
