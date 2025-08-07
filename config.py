@@ -12,7 +12,8 @@ class Config:
     FIREBASE_CREDENTIALS_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH') or 'kile-kitabu-firebase-adminsdk-pjk21-d2e073c9ae.json'
     FIREBASE_DATABASE_URL = os.environ.get('FIREBASE_DATABASE_URL') or 'https://kile-kitabu-default-rtdb.firebaseio.com'
     
-
+    # App Configuration
+    BASE_URL = os.environ.get('BASE_URL') or 'http://localhost:5000'
     
     # Payment Configuration
     DAILY_RATE = 5  # KSH 5 per day

@@ -72,6 +72,11 @@ class PesaPalIntegration:
             }
         }
         
+        # Add payment method if specified
+        payment_method = payment_data.get('payment_method', 'ALL')
+        if payment_method and payment_method != 'ALL':
+            payment_request['payment_method'] = payment_method
+        
         try:
             response = requests.post(url, headers=headers, json=payment_request)
             response.raise_for_status()

@@ -32,15 +32,19 @@ def require_auth(f):
     def decorated_function(*args, **kwargs):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
+            print("No Authorization header or invalid format")
             return jsonify({'error': 'No token provided'}), 401
         
         token = auth_header.split('Bearer ')[1]
         try:
             # Verify Firebase ID token
+            print(f"Verifying token: {token[:20]}...")
             decoded_token = auth.verify_id_token(token)
             request.user_id = decoded_token['uid']
+            print(f"Token verified successfully for user: {decoded_token['uid']}")
             return f(*args, **kwargs)
         except Exception as e:
+            print(f"Token verification failed: {str(e)}")
             return jsonify({'error': 'Invalid Firebase token'}), 401
     
     return decorated_function
@@ -187,6 +191,7 @@ def initiate_payment():
     user_id = request.user_id
     payment_data = request.json
     amount = payment_data.get('amount')
+    payment_method = payment_data.get('payment_method', 'ALL')  # Default to all methods
     
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
@@ -201,6 +206,7 @@ def initiate_payment():
         'user_id': user_id,
         'amount': amount,
         'credit_days': credit_days,
+        'payment_method': payment_method,
         'status': 'pending',
         'created_at': datetime.datetime.now().isoformat()
     }
@@ -212,6 +218,7 @@ def initiate_payment():
         'payment_id': payment_id,
         'amount': amount,
         'credit_days': credit_days,
+        'payment_method': payment_method,
         'email': payment_data.get('email'),
         'phone': payment_data.get('phone'),
         'first_name': payment_data.get('first_name'),
@@ -222,7 +229,7 @@ def initiate_payment():
     
     if pesapal_response:
         # Update payment record with PesaPal tracking ID
-        db.collection('payments').document(payment_id).update({
+        db.reference(f'payments/{payment_id}').update({
             'order_tracking_id': pesapal_response['order_tracking_id']
         })
         
@@ -231,11 +238,12 @@ def initiate_payment():
             'payment_url': pesapal_response['payment_url'],
             'amount': amount,
             'credit_days': credit_days,
+            'payment_method': payment_method,
             'status': 'pending'
         })
     else:
         # Delete the payment record if PesaPal integration failed
-        db.collection('payments').document(payment_id).delete()
+        db.reference(f'payments/{payment_id}').delete()
         return jsonify({'error': 'Failed to create payment request'}), 500
 
 @app.route('/api/payment/confirm', methods=['POST'])
