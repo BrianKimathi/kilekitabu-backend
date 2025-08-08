@@ -14,13 +14,23 @@ app.config.from_object(Config)
 CORS(app)
 
 # Initialize Firebase Admin SDK with Realtime Database
-cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
-firebase_admin.initialize_app(cred, {
-    'databaseURL': Config.FIREBASE_DATABASE_URL
-})
+try:
+    cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': Config.FIREBASE_DATABASE_URL
+    })
+    print("Firebase initialized successfully")
+except Exception as e:
+    print(f"Firebase initialization error: {e}")
+    # Continue without Firebase for now - this will cause issues but won't crash the app
 
-# Initialize PesaPal Integration
-pesapal = PesaPalIntegration()
+# Initialize PesaPal Integration with error handling
+try:
+    pesapal = PesaPalIntegration()
+    print("PesaPal integration initialized successfully")
+except Exception as e:
+    print(f"PesaPal initialization error: {e}")
+    pesapal = None  # Set to None so we can check if it's available
 
 # Configuration
 DAILY_RATE = Config.DAILY_RATE
@@ -30,22 +40,26 @@ def require_auth(f):
     """Decorator to require Firebase authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            print("No Authorization header or invalid format")
-            return jsonify({'error': 'No token provided'}), 401
-        
-        token = auth_header.split('Bearer ')[1]
         try:
-            # Verify Firebase ID token
-            print(f"Verifying token: {token[:20]}...")
-            decoded_token = auth.verify_id_token(token)
-            request.user_id = decoded_token['uid']
-            print(f"Token verified successfully for user: {decoded_token['uid']}")
-            return f(*args, **kwargs)
+            auth_header = request.headers.get('Authorization')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                print("No Authorization header or invalid format")
+                return jsonify({'error': 'No token provided'}), 401
+            
+            token = auth_header.split('Bearer ')[1]
+            try:
+                # Verify Firebase ID token
+                print(f"Verifying token: {token[:20]}...")
+                decoded_token = auth.verify_id_token(token)
+                request.user_id = decoded_token['uid']
+                print(f"Token verified successfully for user: {decoded_token['uid']}")
+                return f(*args, **kwargs)
+            except Exception as e:
+                print(f"Token verification failed: {str(e)}")
+                return jsonify({'error': 'Invalid Firebase token'}), 401
         except Exception as e:
-            print(f"Token verification failed: {str(e)}")
-            return jsonify({'error': 'Invalid Firebase token'}), 401
+            print(f"Authentication decorator error: {e}")
+            return jsonify({'error': 'Authentication service error'}), 500
     
     return decorated_function
 
@@ -99,6 +113,14 @@ def health_check():
         ]
     })
 
+@app.route('/test', methods=['GET'])
+def test_endpoint():
+    """Simple test endpoint without authentication"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'Backend is running',
+        'timestamp': datetime.datetime.now().isoformat()
+    })
 
 
 @app.route('/api/user/credit', methods=['GET'])
@@ -213,6 +235,13 @@ def initiate_payment():
     
     db.reference(f'payments/{payment_id}').set(payment_info)
     
+    # Check if PesaPal is available
+    if pesapal is None:
+        return jsonify({
+            'error': 'Payment service temporarily unavailable',
+            'message': 'Please try again later or contact support'
+        }), 503
+    
     # Integrate with PesaPal API
     payment_request_data = {
         'payment_id': payment_id,
@@ -225,72 +254,84 @@ def initiate_payment():
         'last_name': payment_data.get('last_name')
     }
     
-    pesapal_response = pesapal.create_payment_request(payment_request_data)
-    
-    if pesapal_response:
-        # Update payment record with PesaPal tracking ID
-        db.reference(f'payments/{payment_id}').update({
-            'order_tracking_id': pesapal_response['order_tracking_id']
-        })
+    try:
+        pesapal_response = pesapal.create_payment_request(payment_request_data)
         
-        return jsonify({
-            'payment_id': payment_id,
-            'payment_url': pesapal_response['payment_url'],
-            'amount': amount,
-            'credit_days': credit_days,
-            'payment_method': payment_method,
-            'status': 'pending'
-        })
-    else:
-        # PesaPal integration failed, create a test payment for development
-        print("PesaPal integration failed, creating test payment")
-        
-        # Update payment record for test payment
-        db.reference(f'payments/{payment_id}').update({
-            'order_tracking_id': f'test-{payment_id}',
-            'status': 'test_payment'
-        })
-        
-        # For development/testing, automatically complete the payment
-        # In production, this should not happen
-        if Config.DEBUG:
-            # Simulate successful payment after 5 seconds
-            import threading
-            import time
+        if pesapal_response:
+            # Update payment record with PesaPal tracking ID
+            db.reference(f'payments/{payment_id}').update({
+                'order_tracking_id': pesapal_response['order_tracking_id']
+            })
             
-            def complete_test_payment():
-                time.sleep(5)
-                # Update payment status
-                db.reference(f'payments/{payment_id}').update({
-                    'status': 'completed',
-                    'completed_at': datetime.datetime.now().isoformat()
-                })
+            return jsonify({
+                'payment_id': payment_id,
+                'payment_url': pesapal_response['payment_url'],
+                'amount': amount,
+                'credit_days': credit_days,
+                'payment_method': payment_method,
+                'status': 'pending'
+            })
+        else:
+            # PesaPal integration failed, create a test payment for development
+            print("PesaPal integration failed, creating test payment")
+            
+            # Update payment record for test payment
+            db.reference(f'payments/{payment_id}').update({
+                'order_tracking_id': f'test-{payment_id}',
+                'status': 'test_payment'
+            })
+            
+            # For development/testing, automatically complete the payment
+            # In production, this should not happen
+            if Config.DEBUG:
+                # Simulate successful payment after 5 seconds
+                import threading
+                import time
                 
-                # Add credit to user
-                user_ref = db.reference(f'registeredUser/{user_id}')
-                user_data = user_ref.get()
-                
-                if user_data:
-                    current_credit = user_data.get('credit_balance', 0)
-                    new_credit = current_credit + credit_days
-                    total_payments = user_data.get('total_payments', 0) + amount
-                    
-                    user_ref.update({
-                        'credit_balance': new_credit,
-                        'total_payments': total_payments
+                def complete_test_payment():
+                    time.sleep(5)
+                    # Update payment status
+                    db.reference(f'payments/{payment_id}').update({
+                        'status': 'completed',
+                        'completed_at': datetime.datetime.now().isoformat()
                     })
+                    
+                    # Add credit to user
+                    user_ref = db.reference(f'registeredUser/{user_id}')
+                    user_data = user_ref.get()
+                    
+                    if user_data:
+                        current_credit = user_data.get('credit_balance', 0)
+                        new_credit = current_credit + credit_days
+                        total_payments = user_data.get('total_payments', 0) + amount
+                        
+                        user_ref.update({
+                            'credit_balance': new_credit,
+                            'total_payments': total_payments,
+                            'updated_at': datetime.datetime.now().isoformat()
+                        })
+                
+                # Start test payment completion in background
+                thread = threading.Thread(target=complete_test_payment)
+                thread.daemon = True
+                thread.start()
             
-            threading.Thread(target=complete_test_payment, daemon=True).start()
-        
+            return jsonify({
+                'payment_id': payment_id,
+                'payment_url': f"https://kilekitabu-backend.onrender.com/api/payment/test/{payment_id}",
+                'amount': amount,
+                'credit_days': credit_days,
+                'payment_method': payment_method,
+                'status': 'test_payment',
+                'message': 'Test payment created for development'
+            })
+            
+    except Exception as e:
+        print(f"Error in payment initiation: {e}")
         return jsonify({
-            'payment_id': payment_id,
-            'payment_url': f"https://test-payment.kilekitabu.com/pay/{payment_id}",
-            'amount': amount,
-            'credit_days': credit_days,
-            'payment_method': payment_method,
-            'status': 'test_payment',
-            'message': 'Test payment created. Credit will be added automatically in 5 seconds.'
-        })
+            'error': 'Payment service error',
+            'message': 'Unable to process payment request'
+        }), 500
 
 @app.route('/api/payment/confirm', methods=['POST'])
 def confirm_payment():
