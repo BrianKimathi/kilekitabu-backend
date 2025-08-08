@@ -382,16 +382,37 @@ def confirm_payment():
 @app.route('/api/payment/ipn', methods=['POST'])
 def pesapal_ipn():
     """Handle PesaPal IPN (Instant Payment Notification)"""
+    print("🔔 IPN Notification Received")
+    print(f"Headers: {dict(request.headers)}")
+    print(f"Form data: {request.form.to_dict()}")
+    print(f"JSON data: {request.get_json()}")
+    
+    # PesaPal sends data in form format
     ipn_data = request.form.to_dict()
     
-    # Process IPN data
-    processed_data = pesapal.get_ipn_data(ipn_data)
-    if not processed_data:
-        return jsonify({'error': 'Invalid IPN data'}), 400
+    if not ipn_data:
+        print("❌ No IPN data received")
+        return jsonify({'error': 'No IPN data received'}), 400
     
-    payment_id = processed_data['payment_id']
-    order_tracking_id = processed_data['order_tracking_id']
-    status = processed_data['status']
+    print(f"📋 IPN Data: {ipn_data}")
+    
+    # Extract key information from PesaPal IPN
+    order_tracking_id = ipn_data.get('OrderTrackingId')
+    payment_status = ipn_data.get('PaymentStatus')
+    payment_method = ipn_data.get('PaymentMethod')
+    amount = ipn_data.get('Amount')
+    merchant_reference = ipn_data.get('MerchantReference')
+    
+    print(f"🔍 Extracted data:")
+    print(f"   Order Tracking ID: {order_tracking_id}")
+    print(f"   Payment Status: {payment_status}")
+    print(f"   Payment Method: {payment_method}")
+    print(f"   Amount: {amount}")
+    print(f"   Merchant Reference: {merchant_reference}")
+    
+    if not order_tracking_id:
+        print("❌ No OrderTrackingId in IPN data")
+        return jsonify({'error': 'Missing OrderTrackingId'}), 400
     
     # Find payment by order tracking ID
     payments_ref = db.reference('payments')
@@ -408,18 +429,26 @@ def pesapal_ipn():
                 break
     
     if not payment_info:
+        print(f"❌ Payment not found for OrderTrackingId: {order_tracking_id}")
         return jsonify({'error': 'Payment not found'}), 404
+    
+    print(f"✅ Found payment: {payment_id}")
     
     user_id = payment_info['user_id']
     
     # Update payment status
-    db.reference(f'payments/{payment_id}').update({
-        'status': 'completed' if status == 'COMPLETED' else 'failed',
+    update_data = {
+        'status': 'completed' if payment_status == 'COMPLETED' else 'failed',
         'completed_at': datetime.datetime.now().isoformat(),
-        'ipn_data': processed_data
-    })
+        'ipn_data': ipn_data,
+        'payment_method': payment_method,
+        'pesapal_amount': amount
+    }
     
-    if status == 'COMPLETED':
+    db.reference(f'payments/{payment_id}').update(update_data)
+    print(f"✅ Updated payment status to: {update_data['status']}")
+    
+    if payment_status == 'COMPLETED':
         # Add credit to user
         user_ref = db.reference(f'registeredUser/{user_id}')
         user_data = user_ref.get()
@@ -430,10 +459,97 @@ def pesapal_ipn():
         
         user_ref.update({
             'credit_balance': new_credit,
-            'total_payments': total_payments
+            'total_payments': total_payments,
+            'updated_at': datetime.datetime.now().isoformat()
         })
+        
+        print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
+        print(f"   New balance: {new_credit} days")
     
+    # Return success to PesaPal
     return jsonify({'message': 'IPN processed successfully'})
+
+@app.route('/api/payment/callback', methods=['GET', 'POST'])
+def payment_callback():
+    """Handle PesaPal payment callback"""
+    print("🔄 Payment Callback Received")
+    print(f"Method: {request.method}")
+    print(f"Query params: {request.args.to_dict()}")
+    print(f"Form data: {request.form.to_dict()}")
+    
+    # Extract callback data
+    order_tracking_id = request.args.get('OrderTrackingId')
+    payment_status = request.args.get('PaymentStatus')
+    
+    print(f"📋 Callback Data:")
+    print(f"   Order Tracking ID: {order_tracking_id}")
+    print(f"   Payment Status: {payment_status}")
+    
+    if order_tracking_id:
+        # Find and update payment
+        payments_ref = db.reference('payments')
+        payments_data = payments_ref.get()
+        
+        if payments_data:
+            for pid, payment in payments_data.items():
+                if payment.get('order_tracking_id') == order_tracking_id:
+                    payment_ref = db.reference(f'payments/{pid}')
+                    payment_ref.update({
+                        'callback_status': payment_status,
+                        'callback_received_at': datetime.datetime.now().isoformat()
+                    })
+                    print(f"✅ Updated payment {pid} with callback status: {payment_status}")
+                    break
+    
+    # Redirect to frontend with status
+    frontend_url = Config.FRONTEND_URL
+    redirect_url = f"{frontend_url}/payment/status?orderTrackingId={order_tracking_id}&status={payment_status}"
+    
+    print(f"🔄 Redirecting to: {redirect_url}")
+    return jsonify({
+        'redirect_url': redirect_url,
+        'message': 'Payment callback processed'
+    })
+
+@app.route('/api/payment/cancel', methods=['GET', 'POST'])
+def payment_cancel():
+    """Handle PesaPal payment cancellation"""
+    print("❌ Payment Cancellation Received")
+    print(f"Method: {request.method}")
+    print(f"Query params: {request.args.to_dict()}")
+    print(f"Form data: {request.form.to_dict()}")
+    
+    # Extract cancellation data
+    order_tracking_id = request.args.get('OrderTrackingId')
+    
+    print(f"📋 Cancellation Data:")
+    print(f"   Order Tracking ID: {order_tracking_id}")
+    
+    if order_tracking_id:
+        # Find and update payment
+        payments_ref = db.reference('payments')
+        payments_data = payments_ref.get()
+        
+        if payments_data:
+            for pid, payment in payments_data.items():
+                if payment.get('order_tracking_id') == order_tracking_id:
+                    payment_ref = db.reference(f'payments/{pid}')
+                    payment_ref.update({
+                        'status': 'cancelled',
+                        'cancelled_at': datetime.datetime.now().isoformat()
+                    })
+                    print(f"✅ Updated payment {pid} as cancelled")
+                    break
+    
+    # Redirect to frontend
+    frontend_url = Config.FRONTEND_URL
+    redirect_url = f"{frontend_url}/payment/cancelled?orderTrackingId={order_tracking_id}"
+    
+    print(f"🔄 Redirecting to: {redirect_url}")
+    return jsonify({
+        'redirect_url': redirect_url,
+        'message': 'Payment cancelled'
+    })
 
 @app.route('/api/payment/status/<payment_id>', methods=['GET'])
 @require_auth

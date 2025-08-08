@@ -21,7 +21,7 @@ class Config:
     PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'your_consumer_secret_here')
     
     # Pesapal Environment (sandbox or production)
-    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'sandbox')  # 'sandbox' or 'production'
+    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'production')  # Changed to 'production' for live
     
     # Pesapal Base URLs
     PESAPAL_BASE_URL = (
@@ -30,8 +30,13 @@ class Config:
     )
     
     # Application Configuration
-    BASE_URL = os.getenv('BASE_URL', 'http://localhost:5000')
-    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+    BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://kilekitabu.com')
+    
+    # IPN Configuration for Live Environment
+    IPN_URL = f"{BASE_URL}/api/payment/ipn"
+    CALLBACK_URL = f"{BASE_URL}/api/payment/callback"
+    CANCELLATION_URL = f"{BASE_URL}/api/payment/cancel"
     
     # Database Configuration (if using database)
     DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///kilekitabu.db')
@@ -45,11 +50,6 @@ class Config:
     # Payment Configuration
     CURRENCY = 'KES'
     COUNTRY_CODE = 'KE'
-    
-    # IPN Configuration
-    IPN_URL = f"{BASE_URL}/api/payment/ipn"
-    CALLBACK_URL = f"{BASE_URL}/api/payment/callback"
-    CANCELLATION_URL = f"{BASE_URL}/api/payment/cancel"
     
     # Subscription Configuration
     DEFAULT_SUBSCRIPTION_FREQUENCY = 'MONTHLY'

@@ -12,6 +12,9 @@ class PesaPalIntegration:
         self.access_token = None
         self.token_expiry = None
         self.ipn_id = None
+        
+        # Register IPN URL on initialization
+        self._register_ipn_url()
     
     def _get_access_token(self):
         """Get access token from PesaPal API 3.0"""
@@ -30,11 +33,12 @@ class PesaPalIntegration:
         }
         
         print(f"Getting PesaPal access token from: {url}")
+        print(f"Environment: {'PRODUCTION' if Config.is_production() else 'SANDBOX'}")
         print(f"Consumer key: {self.consumer_key[:10]}...")
         print(f"Consumer secret: {self.consumer_secret[:10]}...")
         
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=30)
             print(f"Token request status: {response.status_code}")
             print(f"Token response: {response.text}")
             
@@ -54,7 +58,7 @@ class PesaPalIntegration:
             print(f"Error getting access token: {e}")
             return None
     
-    def register_ipn_url(self, ipn_url):
+    def _register_ipn_url(self):
         """Register IPN URL with PesaPal API 3.0"""
         token = self._get_access_token()
         if not token:
@@ -69,12 +73,15 @@ class PesaPalIntegration:
         }
         
         data = {
-            'url': ipn_url,
+            'url': Config.IPN_URL,
             'ipn_notification_type': 'POST'  # Using POST for better security
         }
         
+        print(f"Registering IPN URL: {Config.IPN_URL}")
+        print(f"IPN registration URL: {url}")
+        
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=30)
             print(f"IPN registration status: {response.status_code}")
             print(f"IPN registration response: {response.text}")
             
@@ -101,8 +108,7 @@ class PesaPalIntegration:
         
         # Register IPN URL if not already registered
         if not self.ipn_id:
-            ipn_url = f"{Config.BASE_URL}/api/payment/ipn"
-            self.ipn_id = self.register_ipn_url(ipn_url)
+            self.ipn_id = self._register_ipn_url()
             if not self.ipn_id:
                 print("Failed to register IPN URL")
                 return None
@@ -151,7 +157,7 @@ class PesaPalIntegration:
         print(f"Request data: {payment_request}")
         
         try:
-            response = requests.post(url, headers=headers, json=payment_request)
+            response = requests.post(url, headers=headers, json=payment_request, timeout=30)
             print(f"PesaPal response status: {response.status_code}")
             print(f"PesaPal response: {response.text}")
             
