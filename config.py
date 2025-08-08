@@ -5,6 +5,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
+    # Firebase Configuration
+    FIREBASE_CREDENTIALS_PATH = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-d2e073c9ae.json')
+    FIREBASE_DATABASE_URL = os.getenv('FIREBASE_DATABASE_URL', 'https://kile-kitabu-default-rtdb.firebaseio.com')
+    
+    # Application Configuration
+    DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+    
+    # Credit System Configuration
+    DAILY_RATE = float(os.getenv('DAILY_RATE', '10.0'))  # Cost per day in KES
+    FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '7'))  # Free trial period in days
+    
     # Pesapal Configuration
     PESAPAL_CONSUMER_KEY = os.getenv('PESAPAL_CONSUMER_KEY', 'your_consumer_key_here')
     PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'your_consumer_secret_here')
