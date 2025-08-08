@@ -213,7 +213,6 @@ def initiate_payment():
     user_id = request.user_id
     payment_data = request.json
     amount = payment_data.get('amount')
-    payment_method = payment_data.get('payment_method', 'ALL')  # Default to all methods
     
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
@@ -228,7 +227,6 @@ def initiate_payment():
         'user_id': user_id,
         'amount': amount,
         'credit_days': credit_days,
-        'payment_method': payment_method,
         'status': 'pending',
         'created_at': datetime.datetime.now().isoformat()
     }
@@ -247,7 +245,6 @@ def initiate_payment():
         'payment_id': payment_id,
         'amount': amount,
         'credit_days': credit_days,
-        'payment_method': payment_method,
         'email': payment_data.get('email'),
         'phone': payment_data.get('phone'),
         'first_name': payment_data.get('first_name'),
@@ -268,7 +265,6 @@ def initiate_payment():
                 'payment_url': pesapal_response['payment_url'],
                 'amount': amount,
                 'credit_days': credit_days,
-                'payment_method': payment_method,
                 'status': 'pending'
             })
         else:
@@ -321,7 +317,6 @@ def initiate_payment():
                 'payment_url': f"https://kilekitabu-backend.onrender.com/api/payment/test/{payment_id}",
                 'amount': amount,
                 'credit_days': credit_days,
-                'payment_method': payment_method,
                 'status': 'test_payment',
                 'message': 'Test payment created for development'
             })
