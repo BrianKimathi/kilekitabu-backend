@@ -216,6 +216,9 @@ def initiate_payment():
     
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
+    # Enforce minimum amount per business rule
+    if amount < Config.VALIDATION_RULES.get('min_amount', 10.0):
+        return jsonify({'error': f'Minimum amount is KES {int(Config.VALIDATION_RULES.get("min_amount", 10))}'}), 400
     
     # Calculate credit days
     credit_days = int(amount / DAILY_RATE)
@@ -393,17 +396,13 @@ def pesapal_ipn():
     
     # Extract key information from PesaPal IPN
     order_tracking_id = ipn_data.get('OrderTrackingId')
-    payment_status = ipn_data.get('PaymentStatus')
-    payment_method = ipn_data.get('PaymentMethod')
-    amount = ipn_data.get('Amount')
-    merchant_reference = ipn_data.get('MerchantReference')
+    order_notification_type = ipn_data.get('OrderNotificationType', 'IPNCHANGE')
+    order_merchant_reference = ipn_data.get('OrderMerchantReference')
     
     print(f"🔍 Extracted data:")
     print(f"   Order Tracking ID: {order_tracking_id}")
-    print(f"   Payment Status: {payment_status}")
-    print(f"   Payment Method: {payment_method}")
-    print(f"   Amount: {amount}")
-    print(f"   Merchant Reference: {merchant_reference}")
+    print(f"   Order Notification Type: {order_notification_type}")
+    print(f"   Order Merchant Reference: {order_merchant_reference}")
     
     if not order_tracking_id:
         print("❌ No OrderTrackingId in IPN data")
@@ -425,44 +424,113 @@ def pesapal_ipn():
     
     if not payment_info:
         print(f"❌ Payment not found for OrderTrackingId: {order_tracking_id}")
-        return jsonify({'error': 'Payment not found'}), 404
+        # Return 200 to PesaPal even if payment not found (as per documentation)
+        return jsonify({
+            'orderNotificationType': order_notification_type,
+            'orderTrackingId': order_tracking_id,
+            'orderMerchantReference': order_merchant_reference,
+            'status': 500
+        }), 200
     
     print(f"✅ Found payment: {payment_id}")
     
     user_id = payment_info['user_id']
     
-    # Update payment status
-    update_data = {
-        'status': 'completed' if payment_status == 'COMPLETED' else 'failed',
-        'completed_at': datetime.datetime.now().isoformat(),
-        'ipn_data': ipn_data,
-        'payment_method': payment_method,
-        'pesapal_amount': amount
-    }
-    
-    db.reference(f'payments/{payment_id}').update(update_data)
-    print(f"✅ Updated payment status to: {update_data['status']}")
-    
-    if payment_status == 'COMPLETED':
-        # Add credit to user
-        user_ref = db.reference(f'registeredUser/{user_id}')
-        user_data = user_ref.get()
-        
-        current_credit = user_data.get('credit_balance', 0)
-        new_credit = current_credit + payment_info['credit_days']
-        total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-        
-        user_ref.update({
-            'credit_balance': new_credit,
-            'total_payments': total_payments,
-            'updated_at': datetime.datetime.now().isoformat()
-        })
-        
-        print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
-        print(f"   New balance: {new_credit} days")
-    
-    # Return success to PesaPal
-    return jsonify({'message': 'IPN processed successfully'})
+    try:
+        # Use PesaPal API to get actual payment status
+        if pesapal is not None:
+            payment_status_response = pesapal.check_payment_status(order_tracking_id)
+            
+            if payment_status_response:
+                print(f"📊 PesaPal API Response: {payment_status_response}")
+                
+                payment_status = payment_status_response.get('status')
+                status_code = payment_status_response.get('status_code')
+                amount = payment_status_response.get('amount')
+                payment_method = payment_status_response.get('payment_method')
+                confirmation_code = payment_status_response.get('confirmation_code')
+                created_date = payment_status_response.get('created_date')
+                payment_account = payment_status_response.get('payment_account')
+                
+                # Update payment with detailed information
+                update_data = {
+                    'status': 'completed' if status_code == 1 else 'failed',
+                    'completed_at': datetime.datetime.now().isoformat(),
+                    'ipn_data': ipn_data,
+                    'pesapal_status': payment_status,
+                    'pesapal_status_code': status_code,
+                    'pesapal_amount': amount,
+                    'payment_method': payment_method,
+                    'confirmation_code': confirmation_code,
+                    'created_date': created_date,
+                    'payment_account': payment_account
+                }
+                
+                db.reference(f'payments/{payment_id}').update(update_data)
+                print(f"✅ Updated payment status to: {update_data['status']}")
+                
+                if status_code == 1:  # COMPLETED
+                    # Add credit to user
+                    user_ref = db.reference(f'registeredUser/{user_id}')
+                    user_data = user_ref.get()
+                    
+                    current_credit = user_data.get('credit_balance', 0)
+                    new_credit = current_credit + payment_info['credit_days']
+                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
+                    
+                    user_ref.update({
+                        'credit_balance': new_credit,
+                        'total_payments': total_payments,
+                        'updated_at': datetime.datetime.now().isoformat()
+                    })
+                    
+                    print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
+                    print(f"   New balance: {new_credit} days")
+                    
+                    # Return success response to PesaPal
+                    return jsonify({
+                        'orderNotificationType': order_notification_type,
+                        'orderTrackingId': order_tracking_id,
+                        'orderMerchantReference': order_merchant_reference,
+                        'status': 200
+                    }), 200
+                else:
+                    print(f"❌ Payment failed with status: {payment_status}")
+                    # Return success response to PesaPal (we received the notification)
+                    return jsonify({
+                        'orderNotificationType': order_notification_type,
+                        'orderTrackingId': order_tracking_id,
+                        'orderMerchantReference': order_merchant_reference,
+                        'status': 200
+                    }), 200
+            else:
+                print("❌ Failed to get payment status from PesaPal API")
+                # Return error response to PesaPal
+                return jsonify({
+                    'orderNotificationType': order_notification_type,
+                    'orderTrackingId': order_tracking_id,
+                    'orderMerchantReference': order_merchant_reference,
+                    'status': 500
+                }), 200
+        else:
+            print("❌ PesaPal integration not available")
+            # Return error response to PesaPal
+            return jsonify({
+                'orderNotificationType': order_notification_type,
+                'orderTrackingId': order_tracking_id,
+                'orderMerchantReference': order_merchant_reference,
+                'status': 500
+            }), 200
+            
+    except Exception as e:
+        print(f"❌ Error processing IPN: {e}")
+        # Return error response to PesaPal
+        return jsonify({
+            'orderNotificationType': order_notification_type,
+            'orderTrackingId': order_tracking_id,
+            'orderMerchantReference': order_merchant_reference,
+            'status': 500
+        }), 200
 
 @app.route('/api/payment/callback', methods=['GET', 'POST'])
 def payment_callback():

@@ -13,7 +13,7 @@ class Config:
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
     # Credit System Configuration
-    DAILY_RATE = float(os.getenv('DAILY_RATE', '10.0'))  # Cost per day in KES
+    DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
     FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '7'))  # Free trial period in days
     
     # Pesapal Configuration
@@ -86,7 +86,7 @@ class Config:
     
     # Validation Rules
     VALIDATION_RULES = {
-        'min_amount': 1.0,
+        'min_amount': 10.0,
         'max_amount': 1000000.0,
         'phone_regex': r'^\+?254\d{9}$',  # Kenyan phone number format
         'email_regex': r'^[\w\.-]+@[\w\.-]+\.\w+$',
