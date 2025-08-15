@@ -385,12 +385,18 @@ def pesapal_ipn():
     print(f"Form data: {request.form.to_dict()}")
     print(f"JSON data: {request.get_json()}")
     
-    # PesaPal sends data in form format
+    # PesaPal can send data in either form format or JSON format
     ipn_data = request.form.to_dict()
+    if not ipn_data:
+        ipn_data = request.get_json() or {}
     
     if not ipn_data:
         print("❌ No IPN data received")
-        return jsonify({'error': 'No IPN data received'}), 400
+        # Return 200 to PesaPal even if no data (as per documentation)
+        return jsonify({
+            'status': 'error',
+            'message': 'No IPN data received'
+        }), 200
     
     print(f"📋 IPN Data: {ipn_data}")
     
@@ -406,7 +412,11 @@ def pesapal_ipn():
     
     if not order_tracking_id:
         print("❌ No OrderTrackingId in IPN data")
-        return jsonify({'error': 'Missing OrderTrackingId'}), 400
+        # Return 200 to PesaPal even if missing data (as per documentation)
+        return jsonify({
+            'status': 'error',
+            'message': 'Missing OrderTrackingId'
+        }), 200
     
     # Find payment by order tracking ID
     payments_ref = db.reference('payments')
@@ -429,7 +439,7 @@ def pesapal_ipn():
             'orderNotificationType': order_notification_type,
             'orderTrackingId': order_tracking_id,
             'orderMerchantReference': order_merchant_reference,
-            'status': 500
+            'status': 200
         }), 200
     
     print(f"✅ Found payment: {payment_id}")
@@ -524,6 +534,8 @@ def pesapal_ipn():
             
     except Exception as e:
         print(f"❌ Error processing IPN: {e}")
+        import traceback
+        traceback.print_exc()
         # Return error response to PesaPal
         return jsonify({
             'orderNotificationType': order_notification_type,
@@ -634,33 +646,75 @@ def check_payment_status(payment_id):
     
     # Check status from PesaPal if payment is pending
     if payment_info['status'] == 'pending' and payment_info.get('order_tracking_id'):
-        pesapal_status = pesapal.check_payment_status(payment_info['order_tracking_id'])
-        if pesapal_status:
-            # Update payment status if changed
-            if pesapal_status['status'] == 'COMPLETED':
-                payment_ref.update({
-                    'status': 'completed',
-                    'completed_at': datetime.datetime.now().isoformat()
-                })
+        try:
+            pesapal_status = pesapal.check_payment_status(payment_info['order_tracking_id'])
+            if pesapal_status:
+                print(f"📊 PesaPal API Response for {payment_id}: {pesapal_status}")
                 
-                # Add credit to user
-                user_ref = db.reference(f'registeredUser/{user_id}')
-                user_data = user_ref.get()
-                
-                current_credit = user_data.get('credit_balance', 0)
-                new_credit = current_credit + payment_info['credit_days']
-                total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-                
-                user_ref.update({
-                    'credit_balance': new_credit,
-                    'total_payments': total_payments
-                })
-                
+                # Update payment status if changed
+                if pesapal_status['status'] == 'COMPLETED' or pesapal_status.get('status_code') == 1:
+                    payment_ref.update({
+                        'status': 'completed',
+                        'completed_at': datetime.datetime.now().isoformat(),
+                        'pesapal_status': pesapal_status.get('status'),
+                        'pesapal_status_code': pesapal_status.get('status_code'),
+                        'payment_method': pesapal_status.get('payment_method'),
+                        'confirmation_code': pesapal_status.get('confirmation_code')
+                    })
+                    
+                    # Add credit to user
+                    user_ref = db.reference(f'registeredUser/{user_id}')
+                    user_data = user_ref.get()
+                    
+                    current_credit = user_data.get('credit_balance', 0)
+                    new_credit = current_credit + payment_info['credit_days']
+                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
+                    
+                    user_ref.update({
+                        'credit_balance': new_credit,
+                        'total_payments': total_payments,
+                        'updated_at': datetime.datetime.now().isoformat()
+                    })
+                    
+                    print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
+                    print(f"   New balance: {new_credit} days")
+                    
+                    return jsonify({
+                        'status': 'completed',
+                        'credit_added': payment_info['credit_days'],
+                        'new_balance': new_credit
+                    })
+                elif pesapal_status['status'] == 'FAILED' or pesapal_status.get('status_code') == 2:
+                    payment_ref.update({
+                        'status': 'failed',
+                        'completed_at': datetime.datetime.now().isoformat(),
+                        'pesapal_status': pesapal_status.get('status'),
+                        'pesapal_status_code': pesapal_status.get('status_code')
+                    })
+                    return jsonify({
+                        'status': 'failed',
+                        'message': 'Payment failed'
+                    })
+                else:
+                    # Payment still pending
+                    return jsonify({
+                        'status': 'pending',
+                        'message': 'Payment is still being processed'
+                    })
+            else:
+                print(f"❌ Failed to get PesaPal status for payment {payment_id}")
                 return jsonify({
-                    'status': 'completed',
-                    'credit_added': payment_info['credit_days'],
-                    'new_balance': new_credit
+                    'status': 'pending',
+                    'message': 'Unable to check payment status from PesaPal'
                 })
+        except Exception as e:
+            print(f"❌ Error checking PesaPal status for payment {payment_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'status': 'pending',
+                'message': 'Error checking payment status'
+            })
     
     return jsonify({
         'payment_id': payment_id,
@@ -726,6 +780,205 @@ def record_usage():
         'remaining_credit': user_data.get('credit_balance', 0) - (1 if should_deduct_credit else 0)
     })
 
+@app.route('/api/payment/complete/<payment_id>', methods=['POST'])
+@require_auth
+def manually_complete_payment(payment_id):
+    """Manually complete a payment for testing purposes"""
+    user_id = request.user_id
+    
+    # Get payment record
+    payment_ref = db.reference(f'payments/{payment_id}')
+    payment_data = payment_ref.get()
+    if not payment_data:
+        return jsonify({'error': 'Payment not found'}), 404
+    
+    payment_info = payment_data
+    
+    # Verify payment belongs to user
+    if payment_info['user_id'] != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    # Check if payment is already completed
+    if payment_info['status'] == 'completed':
+        return jsonify({'error': 'Payment already completed'}), 400
+    
+    try:
+        # Mark payment as completed
+        payment_ref.update({
+            'status': 'completed',
+            'completed_at': datetime.datetime.now().isoformat(),
+            'manually_completed': True
+        })
+        
+        # Add credit to user
+        user_ref = db.reference(f'registeredUser/{user_id}')
+        user_data = user_ref.get()
+        
+        current_credit = user_data.get('credit_balance', 0)
+        new_credit = current_credit + payment_info['credit_days']
+        total_payments = user_data.get('total_payments', 0) + payment_info['amount']
+        
+        user_ref.update({
+            'credit_balance': new_credit,
+            'total_payments': total_payments,
+            'updated_at': datetime.datetime.now().isoformat()
+        })
+        
+        print(f"✅ Manually completed payment {payment_id} for user {user_id}")
+        print(f"   Added {payment_info['credit_days']} days credit")
+        print(f"   New balance: {new_credit} days")
+        
+        return jsonify({
+            'status': 'completed',
+            'credit_added': payment_info['credit_days'],
+            'new_balance': new_credit,
+            'message': 'Payment manually completed for testing'
+        })
+        
+    except Exception as e:
+        print(f"❌ Error manually completing payment {payment_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to complete payment'}), 500
+
+@app.route('/api/payment/debug', methods=['GET'])
+@require_auth
+def debug_payments():
+    """Debug endpoint to check all payments for a user"""
+    user_id = request.user_id
+    
+    try:
+        # Get all payments for the user
+        payments_ref = db.reference('payments')
+        payments_data = payments_ref.get()
+        
+        user_payments = []
+        if payments_data:
+            for pid, payment in payments_data.items():
+                if payment.get('user_id') == user_id:
+                    user_payments.append({
+                        'payment_id': pid,
+                        'status': payment.get('status'),
+                        'amount': payment.get('amount'),
+                        'credit_days': payment.get('credit_days'),
+                        'order_tracking_id': payment.get('order_tracking_id'),
+                        'created_at': payment.get('created_at'),
+                        'completed_at': payment.get('completed_at'),
+                        'pesapal_status': payment.get('pesapal_status'),
+                        'pesapal_status_code': payment.get('pesapal_status_code')
+                    })
+        
+        # Get user credit info
+        user_ref = db.reference(f'registeredUser/{user_id}')
+        user_data = user_ref.get()
+        
+        credit_info = {
+            'credit_balance': user_data.get('credit_balance', 0) if user_data else 0,
+            'is_in_trial': user_data.get('is_in_trial', False) if user_data else False,
+            'trial_days_remaining': user_data.get('trial_days_remaining', 0) if user_data else 0,
+            'total_payments': user_data.get('total_payments', 0) if user_data else 0,
+            'last_usage_date': user_data.get('last_usage_date') if user_data else None
+        }
+        
+        return jsonify({
+            'user_id': user_id,
+            'payments': user_payments,
+            'credit_info': credit_info,
+            'total_payments_count': len(user_payments)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in debug payments: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to get debug info'}), 500
+
+@app.route('/api/payment/force-ipn/<payment_id>', methods=['POST'])
+@require_auth
+def force_ipn_retry(payment_id):
+    """Force IPN retry for a specific payment"""
+    user_id = request.user_id
+    
+    # Get payment record
+    payment_ref = db.reference(f'payments/{payment_id}')
+    payment_data = payment_ref.get()
+    if not payment_data:
+        return jsonify({'error': 'Payment not found'}), 404
+    
+    payment_info = payment_data
+    
+    # Verify payment belongs to user
+    if payment_info['user_id'] != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    # Check if payment has order tracking ID
+    order_tracking_id = payment_info.get('order_tracking_id')
+    if not order_tracking_id:
+        return jsonify({'error': 'Payment has no order tracking ID'}), 400
+    
+    try:
+        # Force check payment status from PesaPal
+        if pesapal is not None:
+            payment_status_response = pesapal.check_payment_status(order_tracking_id)
+            
+            if payment_status_response:
+                print(f"📊 Forced PesaPal API Response for {payment_id}: {payment_status_response}")
+                
+                payment_status = payment_status_response.get('status')
+                status_code = payment_status_response.get('status_code')
+                
+                # Update payment status if changed
+                if payment_status == 'COMPLETED' or status_code == 1:
+                    payment_ref.update({
+                        'status': 'completed',
+                        'completed_at': datetime.datetime.now().isoformat(),
+                        'pesapal_status': payment_status,
+                        'pesapal_status_code': status_code,
+                        'force_checked': True
+                    })
+                    
+                    # Add credit to user
+                    user_ref = db.reference(f'registeredUser/{user_id}')
+                    user_data = user_ref.get()
+                    
+                    current_credit = user_data.get('credit_balance', 0)
+                    new_credit = current_credit + payment_info['credit_days']
+                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
+                    
+                    user_ref.update({
+                        'credit_balance': new_credit,
+                        'total_payments': total_payments,
+                        'updated_at': datetime.datetime.now().isoformat()
+                    })
+                    
+                    print(f"✅ Force IPN: Added {payment_info['credit_days']} days credit to user {user_id}")
+                    print(f"   New balance: {new_credit} days")
+                    
+                    return jsonify({
+                        'status': 'completed',
+                        'credit_added': payment_info['credit_days'],
+                        'new_balance': new_credit,
+                        'message': 'Payment completed via force IPN retry'
+                    })
+                else:
+                    return jsonify({
+                        'status': 'pending',
+                        'message': f'Payment still pending. PesaPal status: {payment_status}'
+                    })
+            else:
+                return jsonify({
+                    'error': 'Failed to get payment status from PesaPal'
+                }), 500
+        else:
+            return jsonify({
+                'error': 'PesaPal integration not available'
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Error in force IPN retry for payment {payment_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to force IPN retry'}), 500
 
 
 if __name__ == '__main__':
