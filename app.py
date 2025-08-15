@@ -491,7 +491,8 @@ def pesapal_ipn():
                     user_ref.update({
                         'credit_balance': new_credit,
                         'total_payments': total_payments,
-                        'updated_at': datetime.datetime.now().isoformat()
+                        'updated_at': datetime.datetime.now().isoformat(),
+                        'last_payment_date': datetime.datetime.now().isoformat()  # Track last payment to prevent immediate deduction
                     })
                     
                     print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
@@ -576,14 +577,13 @@ def payment_callback():
                     print(f"✅ Updated payment {pid} with callback status: {payment_status}")
                     break
     
-    # Redirect to frontend with status
-    frontend_url = Config.FRONTEND_URL
-    redirect_url = f"{frontend_url}/payment/status?orderTrackingId={order_tracking_id}&status={payment_status}"
-    
-    print(f"🔄 Redirecting to: {redirect_url}")
+    # Return JSON response instead of redirecting to external URL
+    # This allows the app to handle the completion properly
     return jsonify({
-        'redirect_url': redirect_url,
-        'message': 'Payment callback processed'
+        'status': 'success',
+        'order_tracking_id': order_tracking_id,
+        'payment_status': payment_status,
+        'message': 'Payment callback processed successfully'
     })
 
 @app.route('/api/payment/cancel', methods=['GET', 'POST'])
@@ -738,6 +738,7 @@ def record_usage():
     
     current_date = datetime.datetime.now(datetime.timezone.utc)
     last_usage_date_str = user_data.get('last_usage_date')
+    last_payment_date_str = user_data.get('last_payment_date')
     
     # Check if this is a new day of usage
     should_deduct_credit = False
@@ -750,6 +751,14 @@ def record_usage():
         current_date_only = current_date.date()
         if current_date_only > last_usage_date_only:
             should_deduct_credit = True
+    
+    # Prevent credit deduction if payment was made today
+    if last_payment_date_str:
+        last_payment_date = datetime.datetime.fromisoformat(last_payment_date_str.replace('Z', '+00:00'))
+        last_payment_date_only = last_payment_date.date()
+        if current_date_only == last_payment_date_only:
+            print(f"🔄 Payment made today, skipping credit deduction for user {user_id}")
+            should_deduct_credit = False
     
     if should_deduct_credit:
         # Deduct one day of credit
