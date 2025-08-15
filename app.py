@@ -577,14 +577,82 @@ def payment_callback():
                     print(f"✅ Updated payment {pid} with callback status: {payment_status}")
                     break
     
-    # Return JSON response instead of redirecting to external URL
-    # This allows the app to handle the completion properly
-    return jsonify({
-        'status': 'success',
-        'order_tracking_id': order_tracking_id,
-        'payment_status': payment_status,
-        'message': 'Payment callback processed successfully'
-    })
+    # Return HTML that automatically closes the WebView and returns to app
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payment Complete</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding: 50px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                margin: 0;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+            .container {{
+                background: rgba(255, 255, 255, 0.1);
+                padding: 40px;
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }}
+            .success {{
+                font-size: 48px;
+                margin-bottom: 20px;
+                animation: bounce 1s infinite;
+            }}
+            .message {{
+                font-size: 18px;
+                margin-bottom: 15px;
+                opacity: 0.9;
+            }}
+            .subtitle {{
+                font-size: 14px;
+                opacity: 0.7;
+                margin-top: 30px;
+            }}
+            @keyframes bounce {{
+                0%, 20%, 50%, 80%, 100% {{
+                    transform: translateY(0);
+                }}
+                40% {{
+                    transform: translateY(-10px);
+                }}
+                60% {{
+                    transform: translateY(-5px);
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success">✅</div>
+            <div class="message">Payment Successful!</div>
+            <div class="message">Your credits have been added</div>
+            <div class="subtitle">Returning to app...</div>
+        </div>
+        <script>
+            // Auto-close WebView and return to app after 2 seconds
+            setTimeout(function() {{
+                if (window.AndroidInterface) {{
+                    window.AndroidInterface.onPaymentCompleted('success');
+                }} else {{
+                    // Fallback: try to close the window
+                    window.close();
+                }}
+            }}, 2000);
+        </script>
+    </body>
+    </html>
+    """
 
 @app.route('/api/payment/cancel', methods=['GET', 'POST'])
 def payment_cancel():
