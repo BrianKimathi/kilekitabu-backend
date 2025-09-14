@@ -6,32 +6,32 @@ load_dotenv()
 
 class Config:
     # Firebase Configuration
-    FIREBASE_CREDENTIALS_PATH = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-d2e073c9ae.json')
+    FIREBASE_CREDENTIALS_PATH = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json')
     FIREBASE_DATABASE_URL = os.getenv('FIREBASE_DATABASE_URL', 'https://kile-kitabu-default-rtdb.firebaseio.com')
     
     # Application Configuration
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
     # Credit System Configuration
-    DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
+    DAILY_RATE = float(os.getenv('DAILY_RATE', '1.0'))  # Cost per day in KES
     FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '7'))  # Free trial period in days
     
     # Pesapal Configuration
-    PESAPAL_CONSUMER_KEY = os.getenv('PESAPAL_CONSUMER_KEY', 'your_consumer_key_here')
-    PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'your_consumer_secret_here')
+    PESAPAL_CONSUMER_KEY = os.getenv('PESAPAL_CONSUMER_KEY', 'sRE8q61NY+L2TophDXPUsfF/fLZ+Wz7Z')
+    PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'VgLnSaRRXpuZsH69EMRH62uFmdk=')
     
     # Pesapal Environment (sandbox or production)
-    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'production')  # Changed to 'production' for live
+    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'sandbox')  # Default to sandbox for development
     
     # Pesapal Base URLs
-    PESAPAL_BASE_URL = (
+    PESAPAL_BASE_URL = os.getenv('PESAPAL_BASE_URL', 
         'https://cybqa.pesapal.com/pesapalv3' if PESAPAL_ENVIRONMENT == 'sandbox'
         else 'https://pay.pesapal.com/v3'
     )
     
     # Application Configuration
-    BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
-    FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://kilekitabu.com')
+    BASE_URL = os.getenv('BASE_URL', 'https://2a508828fde1.ngrok-free.app')
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
     
     # IPN Configuration for Live Environment
     IPN_URL = f"{BASE_URL}/api/payment/ipn"
@@ -86,7 +86,7 @@ class Config:
     
     # Validation Rules
     VALIDATION_RULES = {
-        'min_amount': 10.0,
+        'min_amount': 1.0,
         'max_amount': 1000000.0,
         'phone_regex': r'^\+?254\d{9}$',  # Kenyan phone number format
         'email_regex': r'^[\w\.-]+@[\w\.-]+\.\w+$',

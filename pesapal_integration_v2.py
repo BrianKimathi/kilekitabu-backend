@@ -13,6 +13,13 @@ class PesaPalIntegration:
         self.token_expiry = None
         self.ipn_id = None
         
+        # Debug output
+        print(f"PesaPal Config Debug:")
+        print(f"  Environment: {Config.PESAPAL_ENVIRONMENT}")
+        print(f"  Base URL: {self.base_url}")
+        print(f"  Consumer Key: {self.consumer_key[:10]}...")
+        print(f"  Consumer Secret: {self.consumer_secret[:10]}...")
+        
         # Register IPN URL on initialization
         self._register_ipn_url()
     

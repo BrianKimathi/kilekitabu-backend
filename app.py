@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import firebase_admin
-from firebase_admin import credentials, db, auth
+from firebase_admin import credentials, auth
 import datetime
 import uuid
 from functools import wraps
@@ -14,11 +14,13 @@ app.config.from_object(Config)
 CORS(app)
 
 # Initialize Firebase Admin SDK with Realtime Database
+db = None
 try:
     cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
     firebase_admin.initialize_app(cred, {
         'databaseURL': Config.FIREBASE_DATABASE_URL
     })
+    from firebase_admin import db
     print("Firebase initialized successfully")
 except Exception as e:
     print(f"Firebase initialization error: {e}")
@@ -35,6 +37,63 @@ except Exception as e:
 # Configuration
 DAILY_RATE = Config.DAILY_RATE
 FREE_TRIAL_DAYS = Config.FREE_TRIAL_DAYS
+
+def safe_firebase_operation(operation, *args, **kwargs):
+    """Safely execute Firebase operations with error handling"""
+    try:
+        return operation(*args, **kwargs)
+    except Exception as e:
+        print(f"Firebase operation failed: {e}")
+        return None
+
+# Mock Firebase service for when Firebase is not available
+class MockFirebaseService:
+    def __init__(self):
+        self.data = {}
+    
+    def reference(self, path):
+        return MockFirebaseReference(path, self.data)
+
+class MockFirebaseReference:
+    def __init__(self, path, data_store):
+        self.path = path
+        self.data_store = data_store
+    
+    def set(self, value):
+        self.data_store[self.path] = value
+        return self
+    
+    def get(self):
+        if self.path in self.data_store:
+            return self.data_store[self.path]
+        
+        # Handle nested references - look for keys that start with the path
+        nested_data = {}
+        for key, value in self.data_store.items():
+            if key.startswith(self.path + '/'):
+                # Extract the nested key (remove the parent path)
+                nested_key = key[len(self.path) + 1:]
+                nested_data[nested_key] = value
+        
+        return nested_data if nested_data else None
+    
+    def update(self, value):
+        if self.path in self.data_store:
+            self.data_store[self.path].update(value)
+        return self
+
+# Use mock Firebase if real Firebase is not available
+if db is None:
+    print("Firebase not available, using mock service")
+    db = MockFirebaseService()
+else:
+    try:
+        # Test if Firebase is working
+        db.reference('test').get()
+        print("Firebase is working")
+    except:
+        print("Firebase not working, switching to mock service")
+        db = MockFirebaseService()
 
 def require_auth(f):
     """Decorator to require Firebase authentication"""
@@ -207,10 +266,10 @@ def get_client_info():
     })
 
 @app.route('/api/payment/initiate', methods=['POST'])
-@require_auth
 def initiate_payment():
     """Initiate a payment through PesaPal"""
-    user_id = request.user_id
+    # For now, use a default user_id since we removed auth requirement
+    user_id = "default_user"  # You can modify this to get from request if needed
     payment_data = request.json
     amount = payment_data.get('amount')
     
@@ -234,7 +293,15 @@ def initiate_payment():
         'created_at': datetime.datetime.now().isoformat()
     }
     
-    db.reference(f'payments/{payment_id}').set(payment_info)
+    # Store payment info in Firebase if available
+    try:
+        db.reference(f'payments/{payment_id}').set(payment_info)
+        print(f"✅ Payment stored: {payment_id}")
+        print(f"🔍 Mock Firebase data after storage: {db.data if hasattr(db, 'data') else 'No data attribute'}")
+    except Exception as e:
+        print(f"❌ Failed to store payment {payment_id}: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Check if PesaPal is available
     if pesapal is None:
@@ -266,8 +333,8 @@ def initiate_payment():
             return jsonify({
                 'payment_id': payment_id,
                 'payment_url': pesapal_response['payment_url'],
-                'amount': amount,
-                'credit_days': credit_days,
+                'amount': float(amount),
+                'credits': float(credit_days),
                 'status': 'pending'
             })
         else:
@@ -317,19 +384,53 @@ def initiate_payment():
             
             return jsonify({
                 'payment_id': payment_id,
-                'payment_url': f"https://kilekitabu-backend.onrender.com/api/payment/test/{payment_id}",
-                'amount': amount,
-                'credit_days': credit_days,
+                'payment_url': f"http://192.168.0.111:5000/api/payment/test/{payment_id}",
+                'amount': float(amount),
+                'credits': float(credit_days),
                 'status': 'test_payment',
                 'message': 'Test payment created for development'
             })
-            
+    
     except Exception as e:
         print(f"Error in payment initiation: {e}")
-        return jsonify({
-            'error': 'Payment service error',
-            'message': 'Unable to process payment request'
-        }), 500
+        return jsonify({'error': 'Payment initiation failed'}), 500
+
+@app.route('/api/payment/test/<payment_id>', methods=['GET'])
+def test_payment_page(payment_id):
+    """Test payment page for development"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Test Payment - KileKitabu</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ font-family: Arial, sans-serif; text-align: center; padding: 20px; }}
+            .container {{ max-width: 400px; margin: 0 auto; }}
+            .success {{ color: #4CAF50; font-size: 24px; margin: 20px 0; }}
+            .info {{ color: #666; margin: 10px 0; }}
+            .button {{ background: #2196F3; color: white; padding: 15px 30px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin: 10px; }}
+            .button:hover {{ background: #1976D2; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🧪 Test Payment</h1>
+            <div class="success">✅ Payment Successful!</div>
+            <div class="info">Payment ID: {payment_id}</div>
+            <div class="info">This is a test payment for development.</div>
+            <div class="info">In production, this would redirect to Pesapal.</div>
+            <button class="button" onclick="window.close()">Close</button>
+        </div>
+        <script>
+            // Auto-close after 3 seconds
+            setTimeout(() => {{
+                window.close();
+            }}, 3000);
+        </script>
+    </body>
+    </html>
+    """
 
 @app.route('/api/payment/confirm', methods=['POST'])
 def confirm_payment():
@@ -342,7 +443,7 @@ def confirm_payment():
         return jsonify({'error': 'Payment ID required'}), 400
     
     payment_ref = db.reference(f'payments/{payment_id}')
-    payment_data = payment_ref.get()
+    payment_data = safe_firebase_operation(lambda: payment_ref.get())
     if not payment_data:
         return jsonify({'error': 'Payment not found'}), 404
     
@@ -351,10 +452,10 @@ def confirm_payment():
     
     if status == 'completed':
         # Update payment status
-        payment_ref.update({
+        safe_firebase_operation(lambda: payment_ref.update({
             'status': 'completed',
             'completed_at': datetime.datetime.now().isoformat()
-        })
+        }))
         
         # Add credit to user
         user_ref = db.reference(f'registeredUser/{user_id}')
@@ -418,7 +519,7 @@ def pesapal_ipn():
             'message': 'Missing OrderTrackingId'
         }), 200
     
-    # Find payment by order tracking ID
+    # Find payment by merchant reference (our payment ID)
     payments_ref = db.reference('payments')
     payments_data = payments_ref.get()
     
@@ -427,13 +528,22 @@ def pesapal_ipn():
     
     if payments_data:
         for pid, payment in payments_data.items():
-            if payment.get('order_tracking_id') == order_tracking_id:
+            # Look for payment by merchant reference (our payment ID) first
+            if pid == order_merchant_reference:
+                payment_info = payment
+                payment_id = pid
+                break
+            # Fallback: also check by order tracking ID
+            elif payment.get('order_tracking_id') == order_tracking_id:
                 payment_info = payment
                 payment_id = pid
                 break
     
     if not payment_info:
         print(f"❌ Payment not found for OrderTrackingId: {order_tracking_id}")
+        print(f"❌ Payment not found for OrderMerchantReference: {order_merchant_reference}")
+        print(f"📋 Available payments: {list(payments_data.keys()) if payments_data else 'None'}")
+        print(f"🔍 Mock Firebase data: {db.data if hasattr(db, 'data') else 'No data attribute'}")
         # Return 200 to PesaPal even if payment not found (as per documentation)
         return jsonify({
             'orderNotificationType': order_notification_type,
@@ -483,6 +593,21 @@ def pesapal_ipn():
                     # Add credit to user
                     user_ref = db.reference(f'registeredUser/{user_id}')
                     user_data = user_ref.get()
+                    
+                    # Initialize user data if it doesn't exist or doesn't have credit fields
+                    if user_data is None:
+                        user_data = {
+                            'credit_balance': 0,
+                            'total_payments': 0,
+                            'created_at': datetime.datetime.now().isoformat()
+                        }
+                        user_ref.set(user_data)
+                    else:
+                        # Ensure credit fields exist
+                        if 'credit_balance' not in user_data:
+                            user_data['credit_balance'] = 0
+                        if 'total_payments' not in user_data:
+                            user_data['total_payments'] = 0
                     
                     current_credit = user_data.get('credit_balance', 0)
                     new_credit = current_credit + payment_info['credit_days']
@@ -917,6 +1042,48 @@ def manually_complete_payment(payment_id):
         import traceback
         traceback.print_exc()
         return jsonify({'error': 'Failed to complete payment'}), 500
+
+@app.route('/api/payment/test-status/<payment_id>', methods=['GET'])
+def test_payment_status(payment_id):
+    """Test endpoint to check payment status without authentication"""
+    try:
+        # Get payment record
+        payment_ref = db.reference(f'payments/{payment_id}')
+        payment_data = payment_ref.get()
+        if not payment_data:
+            return jsonify({'error': 'Payment not found', 'payment_id': payment_id}), 404
+        
+        # Check if we have order_tracking_id to query Pesapal
+        order_tracking_id = payment_data.get('order_tracking_id')
+        if order_tracking_id and pesapal:
+            try:
+                pesapal_status = pesapal.check_payment_status(order_tracking_id)
+                # Return in the format expected by Android app
+                return jsonify({
+                    'status': payment_data.get('status'),  # Use local_status as main status
+                    'payment_id': payment_id,
+                    'local_status': payment_data.get('status'),
+                    'pesapal_status': pesapal_status,
+                    'order_tracking_id': order_tracking_id
+                })
+            except Exception as e:
+                return jsonify({
+                    'status': payment_data.get('status'),  # Use local_status as main status
+                    'payment_id': payment_id,
+                    'local_status': payment_data.get('status'),
+                    'pesapal_error': str(e),
+                    'order_tracking_id': order_tracking_id
+                })
+        else:
+            return jsonify({
+                'status': payment_data.get('status'),  # Use local_status as main status
+                'payment_id': payment_id,
+                'local_status': payment_data.get('status'),
+                'order_tracking_id': order_tracking_id,
+                'message': 'No order_tracking_id or Pesapal not available'
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/payment/debug', methods=['GET'])
 @require_auth
