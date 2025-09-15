@@ -30,7 +30,7 @@ class Config:
     )
     
     # Application Configuration
-    BASE_URL = os.getenv('BASE_URL', 'https://2a508828fde1.ngrok-free.app')
+    BASE_URL = os.getenv('BASE_URL', 'https://a116492be843.ngrok-free.app')
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
     
     # IPN Configuration for Live Environment

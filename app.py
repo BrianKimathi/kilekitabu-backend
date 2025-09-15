@@ -8,6 +8,8 @@ from functools import wraps
 import os
 from config import Config
 from pesapal_integration_v2 import PesaPalIntegration
+from fcm_service import FCMService
+from simple_debt_scheduler import SimpleDebtScheduler
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -33,6 +35,20 @@ try:
 except Exception as e:
     print(f"PesaPal initialization error: {e}")
     pesapal = None  # Set to None so we can check if it's available
+
+# Initialize FCM Service and Scheduler
+fcm_service = None
+notification_scheduler = None
+if db is not None:
+    try:
+        fcm_service = FCMService(db)
+        notification_scheduler = SimpleDebtScheduler(fcm_service)
+        notification_scheduler.start_scheduler()
+        print("FCM service and simple notification scheduler initialized successfully")
+    except Exception as e:
+        print(f"FCM initialization error: {e}")
+        fcm_service = None
+        notification_scheduler = None
 
 # Configuration
 DAILY_RATE = Config.DAILY_RATE
@@ -1223,6 +1239,124 @@ def force_ipn_retry(payment_id):
         import traceback
         traceback.print_exc()
         return jsonify({'error': 'Failed to force IPN retry'}), 500
+
+# FCM Notification Endpoints
+@app.route('/api/notifications/send', methods=['POST'])
+def send_notification():
+    """Send a manual notification to a user"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        title = data.get('title')
+        body = data.get('body')
+        notification_data = data.get('data', {})
+        
+        if not all([user_id, title, body]):
+            return jsonify({'error': 'user_id, title, and body are required'}), 400
+        
+        if not notification_scheduler:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        success = notification_scheduler.send_manual_notification(
+            user_id, title, body, notification_data
+        )
+        
+        if success:
+            return jsonify({'message': 'Notification sent successfully'}), 200
+        else:
+            return jsonify({'error': 'Failed to send notification'}), 500
+            
+    except Exception as e:
+        print(f"Error sending notification: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/notifications/test', methods=['POST'])
+def test_notification():
+    """Send a test notification to a specific user"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id', 'GI7PPaaRh7hRogozJcDHt33RQEw2')  # Default to your user ID
+        title = data.get('title', 'Test Notification')
+        body = data.get('body', 'This is a test notification from KileKitabu backend')
+        
+        print(f"🔔 Test notification request for user: {user_id}")
+        print(f"📝 Title: {title}")
+        print(f"📄 Body: {body}")
+        
+        if not notification_scheduler:
+            print("❌ FCM service not available")
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        print("📤 Attempting to send notification...")
+        success = notification_scheduler.send_manual_notification(
+            user_id, title, body, {"type": "test"}
+        )
+        
+        print(f"📊 Notification result: {success}")
+        
+        if success:
+            print("✅ Test notification sent successfully")
+            return jsonify({'message': 'Test notification sent successfully'}), 200
+        else:
+            print("❌ Failed to send test notification")
+            return jsonify({'error': 'Failed to send test notification'}), 500
+            
+    except Exception as e:
+        print(f"❌ Error sending test notification: {e}")
+        print(f"🔍 Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/api/notifications/check-due', methods=['POST'])
+def check_due_debts_manual():
+    """Manually trigger due debt check"""
+    try:
+        if not notification_scheduler:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        notification_scheduler.check_due_debts()
+        return jsonify({'message': 'Due debt check completed'}), 200
+        
+    except Exception as e:
+        print(f"Error checking due debts: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/notifications/check-overdue', methods=['POST'])
+def check_overdue_debts_manual():
+    """Manually trigger overdue debt check"""
+    try:
+        if not notification_scheduler:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        notification_scheduler.check_overdue_debts()
+        return jsonify({'message': 'Overdue debt check completed'}), 200
+        
+    except Exception as e:
+        print(f"Error checking overdue debts: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/notifications/tokens', methods=['GET'])
+def get_fcm_tokens():
+    """Get all FCM tokens from database (for testing)"""
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        
+        fcm_tokens_ref = db.reference('fcm_tokens')
+        tokens = fcm_tokens_ref.get()
+        
+        if not tokens:
+            return jsonify({'message': 'No FCM tokens found', 'tokens': {}})
+        
+        return jsonify({
+            'message': f'Found {len(tokens)} FCM tokens',
+            'tokens': tokens
+        })
+        
+    except Exception as e:
+        print(f"Error getting FCM tokens: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':
