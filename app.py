@@ -406,7 +406,7 @@ def initiate_payment():
             
             return jsonify({
                 'payment_id': payment_id,
-                'payment_url': f"http://192.168.0.111:5000/api/payment/test/{payment_id}",
+                'payment_url': f"{Config.BASE_URL}/api/payment/test/{payment_id}",
                 'amount': float(amount),
                 'credits': float(credit_days),
                 'status': 'test_payment',
