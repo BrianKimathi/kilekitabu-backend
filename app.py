@@ -360,8 +360,16 @@ def initiate_payment():
                 'status': 'pending'
             })
         else:
-            # PesaPal integration failed, create a test payment for development
-            print("PesaPal integration failed, creating test payment")
+            # PesaPal integration failed
+            print("PesaPal integration failed")
+            if not Config.DEBUG:
+                # In production, do NOT create test payments
+                return jsonify({
+                    'error': 'Payment service temporarily unavailable',
+                    'message': 'Please try again later'
+                }), 503
+            # In debug mode, create a test payment for development
+            print("Creating test payment (DEBUG mode)")
             
             # Update payment record for test payment
             db.reference(f'payments/{payment_id}').update({

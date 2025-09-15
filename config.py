@@ -21,7 +21,7 @@ class Config:
     PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'VgLnSaRRXpuZsH69EMRH62uFmdk=')
     
     # Pesapal Environment (sandbox or production)
-    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'sandbox')  # Default to sandbox for development
+    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'production')  # Default to sandbox for development
     
     # Pesapal Base URLs
     PESAPAL_BASE_URL = os.getenv('PESAPAL_BASE_URL', 
