@@ -8,8 +8,8 @@ from functools import wraps
 import os
 from config import Config
 from pesapal_integration_v2 import PesaPalIntegration
-from fcm_service import FCMService
 from simple_debt_scheduler import SimpleDebtScheduler
+from fcm_v1_service import FCMV1Service, MockFCMV1Service
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -41,10 +41,16 @@ fcm_service = None
 notification_scheduler = None
 if db is not None:
     try:
-        fcm_service = FCMService(db)
+        # Initialize FCM v1 service using service account credentials
+        project_id = os.getenv('FIREBASE_PROJECT_ID', 'kile-kitabu')
+        credentials_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json')
+        if os.path.exists(credentials_path):
+            fcm_service = FCMV1Service(credentials_path, project_id)
+        else:
+            fcm_service = MockFCMV1Service()
         notification_scheduler = SimpleDebtScheduler(fcm_service)
         notification_scheduler.start_scheduler()
-        print("FCM service and simple notification scheduler initialized successfully")
+        print("FCM v1 service and simple notification scheduler initialized successfully")
     except Exception as e:
         print(f"FCM initialization error: {e}")
         fcm_service = None
