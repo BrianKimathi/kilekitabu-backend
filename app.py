@@ -294,6 +294,16 @@ def initiate_payment():
     user_id = "default_user"  # You can modify this to get from request if needed
     payment_data = request.json
     amount = payment_data.get('amount')
+    try:
+        print("🧾 Payment initiate request received")
+        print(f"   ▶ user_id: {user_id}")
+        print(f"   ▶ amount: {amount}")
+        print(f"   ▶ environment: {Config.PESAPAL_ENVIRONMENT}")
+        print(f"   ▶ base_url: {Config.BASE_URL}")
+        # Avoid printing full secrets
+        print(f"   ▶ pesapal key set: {bool(Config.PESAPAL_CONSUMER_KEY)} | secret set: {bool(Config.PESAPAL_CONSUMER_SECRET)}")
+    except Exception as e:
+        print(f"⚠️ Failed to log payment initiation context: {e}")
     
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
@@ -344,7 +354,13 @@ def initiate_payment():
     }
     
     try:
+        print("📤 Creating Pesapal payment request with:")
+        print(f"   ▶ payment_id: {payment_id}")
+        print(f"   ▶ credit_days: {credit_days}")
+        print(f"   ▶ payer: {payment_data.get('first_name')} {payment_data.get('last_name')} | {payment_data.get('email')} | {payment_data.get('phone')}")
         pesapal_response = pesapal.create_payment_request(payment_request_data)
+        print("📥 Pesapal create_payment_request response:")
+        print(f"   ▶ {pesapal_response}")
         
         if pesapal_response:
             # Update payment record with PesaPal tracking ID
@@ -422,8 +438,12 @@ def initiate_payment():
             })
     
     except Exception as e:
-        print(f"Error in payment initiation: {e}")
-        return jsonify({'error': 'Payment initiation failed'}), 500
+        import traceback
+        print("❌ Exception during Pesapal initiation")
+        print(f"   ▶ type: {type(e).__name__}")
+        print(f"   ▶ message: {e}")
+        traceback.print_exc()
+        return jsonify({'error': 'Payment initiation failed', 'details': str(e)}), 500
 
 @app.route('/api/payment/test/<payment_id>', methods=['GET'])
 def test_payment_page(payment_id):
