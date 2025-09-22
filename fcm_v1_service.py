@@ -73,8 +73,7 @@ class FCMV1Service:
                         "notification": {
                             "icon": "ic_notification",
                             "color": "#0C57A6",
-                            "sound": "default",
-                            "click_action": "com.jeff.kilekitabu.DEBT_NOTIFICATION"
+                            "sound": "default"
                         }
                     }
                 }

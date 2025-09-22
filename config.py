@@ -29,6 +29,14 @@ class Config:
         else 'https://pay.pesapal.com/v3'
     )
     
+    # Ensure base URL doesn't end with /api to avoid double /api in requests
+    print(f"Original PESAPAL_BASE_URL: {PESAPAL_BASE_URL}")
+    if PESAPAL_BASE_URL.endswith('/api'):
+        PESAPAL_BASE_URL = PESAPAL_BASE_URL[:-4]
+        print(f"Fixed PESAPAL_BASE_URL: {PESAPAL_BASE_URL}")
+    else:
+        print(f"PESAPAL_BASE_URL is correct: {PESAPAL_BASE_URL}")
+    
     # Application Configuration
     BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')

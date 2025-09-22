@@ -1,5 +1,9 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from core.app_factory import create_app
+from core.logging_config import init_logging
+from routes.notifications import bp as notifications_bp
+from routes.health import bp as health_bp
 import firebase_admin
 from firebase_admin import credentials, auth
 import datetime
@@ -10,23 +14,40 @@ from config import Config
 from pesapal_integration_v2 import PesaPalIntegration
 from simple_debt_scheduler import SimpleDebtScheduler
 from fcm_v1_service import FCMV1Service, MockFCMV1Service
+from sms_reminder_scheduler import initialize_sms_scheduler, get_sms_scheduler
 
-app = Flask(__name__)
-app.config.from_object(Config)
-CORS(app)
+init_logging()
+app = create_app(Config)
+CRON_SECRET = os.getenv('CRON_SECRET')  # Optional: set to a strong value in your env
 
 # Initialize Firebase Admin SDK with Realtime Database
 db = None
 try:
-    cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': Config.FIREBASE_DATABASE_URL
-    })
-    from firebase_admin import db
-    print("Firebase initialized successfully")
+    # Check if Firebase is already initialized
+    try:
+        firebase_admin.get_app()
+        print("Firebase already initialized")
+        from firebase_admin import db
+    except ValueError:
+        # Firebase not initialized, initialize it
+        print(f"Looking for Firebase credentials at: {Config.FIREBASE_CREDENTIALS_PATH}")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"Files in current directory: {os.listdir('.')}")
+        
+        if os.path.exists(Config.FIREBASE_CREDENTIALS_PATH):
+            print("Firebase credentials file found, initializing...")
+            cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
+            firebase_admin.initialize_app(cred, {
+                'databaseURL': Config.FIREBASE_DATABASE_URL
+            })
+            from firebase_admin import db
+            print("Firebase initialized successfully")
+        else:
+            print(f"Firebase credentials file not found: {Config.FIREBASE_CREDENTIALS_PATH}")
+            print("Firebase will not be available - authentication will fail")
 except Exception as e:
     print(f"Firebase initialization error: {e}")
-    # Continue without Firebase for now - this will cause issues but won't crash the app
+    print("Firebase will not be available - authentication will fail")
 
 # Initialize PesaPal Integration with error handling
 try:
@@ -51,10 +72,24 @@ if db is not None:
         notification_scheduler = SimpleDebtScheduler(fcm_service)
         notification_scheduler.start_scheduler()
         print("FCM v1 service and simple notification scheduler initialized successfully")
+        
+        # Initialize SMS reminder scheduler
+        sms_api_key = os.getenv('SMS_API_KEY')
+        initialize_sms_scheduler(db, sms_api_key, fcm_service)
+        print("SMS reminder scheduler initialized successfully")
     except Exception as e:
         print(f"FCM initialization error: {e}")
         fcm_service = None
         notification_scheduler = None
+
+# Expose core services for blueprints
+app.config['DB'] = db
+app.config['FCM_SERVICE'] = fcm_service
+app.config['GET_SMS_SCHEDULER'] = get_sms_scheduler
+
+# Blueprints
+app.register_blueprint(notifications_bp)
+app.register_blueprint(health_bp)
 
 # Configuration
 DAILY_RATE = Config.DAILY_RATE
@@ -122,6 +157,11 @@ def require_auth(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         try:
+            # Check if Firebase is available
+            if db is None:
+                print("Firebase not initialized - authentication unavailable")
+                return jsonify({'error': 'Authentication service unavailable'}), 503
+            
             auth_header = request.headers.get('Authorization')
             if not auth_header or not auth_header.startswith('Bearer '):
                 print("No Authorization header or invalid format")
@@ -193,6 +233,121 @@ def health_check():
             'Credit management'
         ]
     })
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint for testing"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'KileKitabu Backend',
+        'version': '1.0.0',
+        'timestamp': datetime.datetime.now().isoformat()
+    })
+
+@app.route('/send_notification', methods=['POST'])
+def send_notification_simple():
+    """Simple notification endpoint for testing"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+        
+        # Use the existing notification service
+        if notification_scheduler:
+            success = notification_scheduler.send_manual_notification(
+                user_id, 
+                "Test Notification", 
+                "This is a test notification from KileKitabu",
+                {"type": "test", "user_id": user_id}
+            )
+            
+            if success:
+                return jsonify({'message': 'Notification sent successfully'}), 200
+            else:
+                return jsonify({'error': 'Failed to send notification'}), 500
+        else:
+            return jsonify({'error': 'FCM service not available'}), 500
+            
+    except Exception as e:
+        print(f"Error sending notification: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/check_sms_reminders', methods=['POST'])
+def check_sms_reminders_simple():
+    """Simple SMS reminder check endpoint for testing"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+        
+        # Use the existing SMS reminder service
+        from sms_reminder_service import SMSReminderService
+        sms_service = SMSReminderService(db)
+        
+        # Check for due reminders
+        reminders = sms_service.check_due_reminders(user_id)
+        
+        return jsonify({
+            'message': 'SMS reminder check completed',
+            'reminders_found': len(reminders),
+            'reminders': reminders
+        }), 200
+            
+    except Exception as e:
+        print(f"Error checking SMS reminders: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/get_user_debts/<user_id>', methods=['GET'])
+def get_user_debts_simple(user_id):
+    """Simple endpoint to get user debts for testing"""
+    try:
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+        
+        # Get user debts from Firebase
+        debts_ref = db.reference(f'UserDebts/{user_id}')
+        user_debts = debts_ref.get()
+        
+        if not user_debts:
+            return jsonify({
+                'message': 'No debts found for user',
+                'user_id': user_id,
+                'debts': []
+            }), 200
+        
+        # Format the response
+        formatted_debts = []
+        for phone_number, phone_data in user_debts.items():
+            if isinstance(phone_data, dict) and 'debts' in phone_data:
+                for debt_id, debt_data in phone_data.get('debts', {}).items():
+                    formatted_debts.append({
+                        'debt_id': debt_id,
+                        'phone_number': phone_number,
+                        'account_name': phone_data.get('accountName', 'Unknown'),
+                        'debt_amount': debt_data.get('debtAmount', '0'),
+                        'balance': debt_data.get('balance', '0'),
+                        'description': debt_data.get('description', ''),
+                        'date': debt_data.get('date', ''),
+                        'due_date': debt_data.get('dueDate', 0),
+                        'is_complete': debt_data.get('isComplete', False)
+                    })
+        
+        return jsonify({
+            'message': 'User debts retrieved successfully',
+            'user_id': user_id,
+            'total_debts': len(formatted_debts),
+            'debts': formatted_debts
+        }), 200
+            
+    except Exception as e:
+        print(f"Error getting user debts: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/test', methods=['GET'])
 def test_endpoint():
@@ -1304,6 +1459,178 @@ def send_notification():
         print(f"Error sending notification: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/api/notifications/register-token', methods=['POST'])
+def register_fcm_token():
+    """Register or update an FCM token for a user"""
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+
+        data = request.get_json(force=True) or {}
+        user_id = data.get('user_id')
+        token = data.get('token')
+
+        if not user_id or not token:
+            return jsonify({'error': 'user_id and token are required'}), 400
+
+        # Store token per user (simple single-token model; extend to list if needed)
+        fcm_tokens_ref = db.reference('fcm_tokens')
+        fcm_tokens_ref.child(user_id).set(token)
+
+        return jsonify({'message': 'Token registered'}), 200
+    except Exception as e:
+        print(f"Error registering FCM token: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/notifications/trigger-user', methods=['POST'])
+def trigger_user_notifications():
+    """Trigger 5-day debt notifications for a specific user.
+    Optionally accepts an FCM token to (re)register before sending.
+    """
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+
+        data = request.get_json(force=True) or {}
+        user_id = data.get('user_id')
+        token = data.get('token')
+
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+
+        # Optionally update token first
+        if token:
+            try:
+                fcm_tokens_ref = db.reference('fcm_tokens')
+                fcm_tokens_ref.child(user_id).set(token)
+            except Exception as e:
+                print(f"Warning: failed to store token: {e}")
+
+        # Use SMS reminder service to find due reminders within 5 days
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+
+        sms_service = sms_scheduler.sms_service
+        reminders = sms_service.check_due_reminders(user_id)
+
+        # Ensure FCM service available
+        if fcm_service is None:
+            return jsonify({'error': 'FCM service not available'}), 500
+
+        # Get final token (after possible registration)
+        fcm_tokens_ref = db.reference('fcm_tokens')
+        final_token = fcm_tokens_ref.child(user_id).get()
+        if not final_token:
+            return jsonify({'error': 'No token for user'}), 400
+
+        sent = 0
+        errors = []
+        for r in reminders:
+            try:
+                title = "💰 Debt Due Soon!"
+                body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
+                data_payload = {
+                    "type": "debt_due_reminder",
+                    "debtor_name": r.get('debtor_name','Unknown'),
+                    "debtor_phone": r.get('debtor_phone',''),
+                    "amount": str(r.get('amount','0')),
+                    "due_date": r.get('due_date',''),
+                    "debt_count": str(r.get('debt_count',1)),
+                    "user_id": user_id,
+                    "title": title,
+                    "body": body
+                }
+                ok = fcm_service.send_notification(final_token, title, body, data_payload)
+                if ok:
+                    sent += 1
+                else:
+                    errors.append('send_failed')
+            except Exception as e:
+                errors.append(str(e))
+
+        return jsonify({
+            'message': 'Trigger completed',
+            'user_id': user_id,
+            'reminders_found': len(reminders),
+            'notifications_sent': sent,
+            'errors': errors
+        }), 200
+
+    except Exception as e:
+        print(f"Error triggering user notifications: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/notifications/cron/due-5days', methods=['GET', 'POST'])
+def cron_send_due_5days_notifications():
+    """Cron-safe endpoint to iterate all users and send FCM debt-due-in-5-days notifications.
+    Secured by optional CRON_SECRET (query param `key` or header `X-Cron-Auth`).
+    """
+    try:
+        # Optional auth check
+        if CRON_SECRET:
+            provided = request.args.get('key') or request.headers.get('X-Cron-Auth')
+            if provided != CRON_SECRET:
+                return jsonify({'error': 'Unauthorized'}), 401
+
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        if fcm_service is None:
+            return jsonify({'error': 'FCM service not available'}), 500
+
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'Reminder service not available'}), 500
+        sms_service = sms_scheduler.sms_service
+
+        # Get all users with tokens
+        fcm_tokens_ref = db.reference('fcm_tokens')
+        tokens = fcm_tokens_ref.get() or {}
+
+        total_users = 0
+        total_reminders_found = 0
+        total_notifications_sent = 0
+        user_results = {}
+
+        for user_id, token in tokens.items():
+            total_users += 1
+            try:
+                reminders = sms_service.check_due_reminders(user_id)
+                total_reminders_found += len(reminders)
+                sent = 0
+                for r in reminders:
+                    title = "💰 Debt Due Soon!"
+                    body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
+                    data_payload = {
+                        'type': 'debt_due_reminder',
+                        'debtor_name': r.get('debtor_name','Unknown'),
+                        'debtor_phone': r.get('debtor_phone',''),
+                        'amount': str(r.get('amount','0')),
+                        'due_date': r.get('due_date',''),
+                        'debt_count': str(r.get('debt_count',1)),
+                        'user_id': user_id,
+                        'title': title,
+                        'body': body,
+                    }
+                    ok = fcm_service.send_notification(token, title, body, data_payload)
+                    if ok:
+                        sent += 1
+                total_notifications_sent += sent
+                user_results[user_id] = {'reminders': len(reminders), 'sent': sent}
+            except Exception as e:
+                user_results[user_id] = {'error': str(e)}
+
+        return jsonify({
+            'message': 'Cron run complete',
+            'users_processed': total_users,
+            'reminders_found': total_reminders_found,
+            'notifications_sent': total_notifications_sent,
+            'results': user_results,
+        })
+    except Exception as e:
+        print(f"Error in cron due-5days: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
 @app.route('/api/notifications/test', methods=['POST'])
 def test_notification():
     """Send a test notification to a specific user"""
@@ -1390,6 +1717,174 @@ def get_fcm_tokens():
         
     except Exception as e:
         print(f"Error getting FCM tokens: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# SMS Reminder Endpoints
+@app.route('/api/sms-reminders/check', methods=['POST'])
+def check_sms_reminders():
+    """Manually trigger SMS reminder check"""
+    try:
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        # Optional query param: days
+        days = request.args.get('days', default=None, type=int)
+        if days is not None and days > 0:
+            result = sms_scheduler.run_manual_check_within(days)
+        else:
+            result = sms_scheduler.run_manual_check()
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error checking SMS reminders: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/sms-reminders/status', methods=['GET'])
+def get_sms_reminder_status():
+    """Get SMS reminder scheduler status"""
+    try:
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        status = sms_scheduler.get_scheduler_status()
+        return jsonify(status)
+        
+    except Exception as e:
+        print(f"Error getting SMS reminder status: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/sms-reminders/stats', methods=['GET'])
+def get_sms_reminder_stats():
+    """Get SMS reminder statistics"""
+    try:
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        days = request.args.get('days', 7, type=int)
+        stats = sms_scheduler.get_reminder_stats(days)
+        return jsonify(stats)
+        
+    except Exception as e:
+        print(f"Error getting SMS reminder stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/sms-reminders/start', methods=['POST'])
+def start_sms_reminders():
+    """Start SMS reminder scheduler"""
+    try:
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        sms_scheduler.start_scheduler()
+        return jsonify({'message': 'SMS reminder scheduler started'})
+        
+    except Exception as e:
+        print(f"Error starting SMS reminders: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/sms-reminders/stop', methods=['POST'])
+def stop_sms_reminders():
+    """Stop SMS reminder scheduler"""
+    try:
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        sms_scheduler.stop_scheduler()
+        return jsonify({'message': 'SMS reminder scheduler stopped'})
+        
+    except Exception as e:
+        print(f"Error stopping SMS reminders: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# Debt Details API
+@app.route('/api/debt/<debt_id>', methods=['GET'])
+def get_debt_details(debt_id):
+    """Get specific debt details by ID"""
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        
+        # Get user ID from query parameter
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id parameter required'}), 400
+        
+        # Get debt details using SMS service
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        debt_details = sms_scheduler.sms_service._get_debt_details(user_id, debt_id)
+        
+        if not debt_details:
+            return jsonify({'error': 'Debt not found'}), 404
+        
+        return jsonify({
+            'status': 'success',
+            'debt': debt_details
+        })
+        
+    except Exception as e:
+        print(f"Error getting debt details: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# Manual SMS API
+@app.route('/api/sms/send', methods=['POST'])
+def send_manual_sms():
+    """Send SMS manually"""
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'JSON data required'}), 400
+        
+        # Required fields
+        phone_number = data.get('phone_number')
+        message = data.get('message')
+        user_id = data.get('user_id')
+        
+        if not all([phone_number, message, user_id]):
+            return jsonify({'error': 'phone_number, message, and user_id are required'}), 400
+        
+        # Get SMS service
+        sms_scheduler = get_sms_scheduler()
+        if not sms_scheduler:
+            return jsonify({'error': 'SMS reminder service not available'}), 500
+        
+        # Send SMS
+        success = sms_scheduler.sms_service._send_sms_via_api(phone_number, message)
+        
+        if success:
+            # Log the manual SMS
+            sms_log = {
+                'user_id': user_id,
+                'phone_number': phone_number,
+                'message': message,
+                'sent_at': datetime.datetime.now().isoformat(),
+                'type': 'manual'
+            }
+            
+            log_id = f"manual_sms_{int(datetime.datetime.now().timestamp())}"
+            db.reference(f'manual_sms_logs/{log_id}').set(sms_log)
+            
+            return jsonify({
+                'status': 'success',
+                'message': 'SMS sent successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to send SMS'
+            }), 500
+        
+    except Exception as e:
+        print(f"Error sending manual SMS: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 
