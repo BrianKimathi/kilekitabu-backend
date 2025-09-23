@@ -1,4 +1,6 @@
 from flask import Blueprint, jsonify, request, current_app
+import time
+import uuid
 
 bp = Blueprint('notifications', __name__, url_prefix='/api/notifications')
 
@@ -40,6 +42,8 @@ def trigger_user():
         for r in reminders:
             title = "💰 Debt Due Soon!"
             body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
+            notification_id = str(uuid.uuid4())
+            created_at = int(time.time() * 1000)
             data_payload = {
                 'type': 'debt_due_reminder',
                 'debtor_name': r.get('debtor_name','Unknown'),
@@ -50,9 +54,29 @@ def trigger_user():
                 'user_id': user_id,
                 'title': title,
                 'body': body,
+                'notification_id': notification_id,
+                'created_at': str(created_at),
             }
             ok = fcm_service.send_notification(final_token, title, body, data_payload)
             if ok:
+                # Persist notification so client can sync even if closed
+                try:
+                    db.reference('Notifications').child(user_id).child(notification_id).set({
+                        'id': notification_id,
+                        'userId': user_id,
+                        'title': title,
+                        'message': body,
+                        'debtorName': r.get('debtor_name','Unknown'),
+                        'debtorPhone': r.get('debtor_phone',''),
+                        'debtId': r.get('debt_id',''),
+                        'amount': str(r.get('amount','0')),
+                        'dueDate': r.get('due_date',''),
+                        'type': 'debt_due_reminder',
+                        'isRead': False,
+                        'createdAt': created_at,
+                    })
+                except Exception as e:
+                    current_app.logger.warning(f"Failed to save notification to Firebase: {e}")
                 sent += 1
             else:
                 errors.append('send_failed')
@@ -101,6 +125,8 @@ def cron_due_5days():
                 for r in reminders:
                     title = "💰 Debt Due Soon!"
                     body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
+                    notification_id = str(uuid.uuid4())
+                    created_at = int(time.time() * 1000)
                     data_payload = {
                         'type': 'debt_due_reminder',
                         'debtor_name': r.get('debtor_name','Unknown'),
@@ -111,9 +137,29 @@ def cron_due_5days():
                         'user_id': user_id,
                         'title': title,
                         'body': body,
+                        'notification_id': notification_id,
+                        'created_at': str(created_at),
                     }
                     ok = fcm_service.send_notification(token, title, body, data_payload)
                     if ok:
+                        # Persist notification so client can sync even if closed
+                        try:
+                            db.reference('Notifications').child(user_id).child(notification_id).set({
+                                'id': notification_id,
+                                'userId': user_id,
+                                'title': title,
+                                'message': body,
+                                'debtorName': r.get('debtor_name','Unknown'),
+                                'debtorPhone': r.get('debtor_phone',''),
+                                'debtId': r.get('debt_id',''),
+                                'amount': str(r.get('amount','0')),
+                                'dueDate': r.get('due_date',''),
+                                'type': 'debt_due_reminder',
+                                'isRead': False,
+                                'createdAt': created_at,
+                            })
+                        except Exception as e:
+                            current_app.logger.warning(f"Failed to save notification to Firebase: {e}")
                         sent += 1
                 total_notifications_sent += sent
                 results[user_id] = {'reminders': len(reminders), 'sent': sent}
