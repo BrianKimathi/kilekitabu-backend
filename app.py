@@ -10,6 +10,8 @@ from services.cybersource_integration import CyberSourceClient
 from services.fcm_v1_service import FCMV1Service, MockFCMV1Service
 from services.simple_debt_scheduler import SimpleDebtScheduler
 from services.low_credit_scheduler import LowCreditScheduler
+from services.debt_reminder_scheduler import DebtReminderScheduler
+from services.keep_alive_scheduler import KeepAliveScheduler
 from services.sms_reminder_scheduler import initialize_sms_scheduler, get_sms_scheduler
 from routes.health import bp as health_bp
 from routes.notifications import bp as notifications_bp
@@ -180,14 +182,28 @@ if db is not None:
         notification_scheduler.start_scheduler()
         print("FCM service and notification scheduler initialized")
         
-        # Initialize low credit notification scheduler
+        # Initialize low credit notification scheduler (8:00 AM daily)
         low_credit_scheduler = LowCreditScheduler(fcm_service)
         low_credit_scheduler.start_scheduler()
-        print("Low credit notification scheduler initialized")
+        print("Low credit notification scheduler initialized (8:00 AM daily)")
+        
+        # Initialize debt reminder scheduler (9:00 AM daily - debts due in 3 days, 1 day)
+        debt_reminder_scheduler = DebtReminderScheduler(fcm_service)
+        debt_reminder_scheduler.start_scheduler()
+        print("Debt reminder scheduler initialized (9:00 AM daily - 3 days & 1 day reminders)")
         
         sms_api_key = os.getenv('SMS_API_KEY')
         initialize_sms_scheduler(db, sms_api_key, fcm_service)
         print("SMS reminder scheduler initialized")
+        
+        # Initialize keep-alive scheduler to prevent Render.com spin-down
+        base_url = Config.BASE_URL
+        if base_url:
+            keep_alive_scheduler = KeepAliveScheduler(base_url)
+            keep_alive_scheduler.start_scheduler()
+            print(f"Keep-alive scheduler initialized (pings every 7 minutes: {base_url}/api/health/keep-alive)")
+        else:
+            print("⚠️ BASE_URL not set - keep-alive scheduler not started")
     except Exception as e:
         print(f"FCM initialization error: {e}")
 

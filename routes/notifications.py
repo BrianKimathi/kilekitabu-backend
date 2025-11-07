@@ -206,3 +206,98 @@ def cron_due_5days():
         return jsonify({'error': str(e)}), 500
 
 
+@bp.route('/test/low-credit', methods=['POST'])
+def test_low_credit():
+    """Test endpoint to manually trigger low credit notifications"""
+    try:
+        from services.low_credit_scheduler import LowCreditScheduler
+        fcm_service = current_app.config.get('FCM_SERVICE')
+        
+        if not fcm_service:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        scheduler = LowCreditScheduler(fcm_service)
+        scheduler.check_low_credits()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Low credit check triggered. Check logs for results.'
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/test/debt-reminders', methods=['POST'])
+def test_debt_reminders():
+    """Test endpoint to manually trigger debt reminder notifications"""
+    try:
+        from services.debt_reminder_scheduler import DebtReminderScheduler
+        fcm_service = current_app.config.get('FCM_SERVICE')
+        
+        if not fcm_service:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        scheduler = DebtReminderScheduler(fcm_service)
+        scheduler.check_upcoming_debts()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Debt reminder check triggered. Check logs for results.'
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/test/send', methods=['POST'])
+def test_send_notification():
+    """Test endpoint to send a test notification to a specific user"""
+    try:
+        db = current_app.config.get('DB')
+        fcm_service = current_app.config.get('FCM_SERVICE')
+        
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        if not fcm_service:
+            return jsonify({'error': 'FCM service not available'}), 500
+        
+        data = request.get_json() or {}
+        user_id = data.get('user_id')
+        title = data.get('title', 'Test Notification')
+        body = data.get('body', 'This is a test notification from KileKitabu')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+        
+        # Get FCM token
+        fcm_tokens_ref = db.reference('fcm_tokens')
+        fcm_token = fcm_tokens_ref.child(user_id).get()
+        
+        if not fcm_token:
+            return jsonify({'error': f'No FCM token found for user {user_id}'}), 404
+        
+        # Send test notification
+        notification_data = {
+            'type': 'test',
+            'user_id': user_id,
+            'timestamp': str(int(time.time())),
+            'notification_type': 'test'
+        }
+        
+        success = fcm_service.send_notification(fcm_token, title, body, notification_data)
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Test notification sent successfully',
+                'user_id': user_id
+            }), 200
+        else:
+            return jsonify({
+                'status': 'failed',
+                'message': 'Failed to send test notification'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
