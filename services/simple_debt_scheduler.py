@@ -118,7 +118,27 @@ class SimpleDebtScheduler:
                         
                         # Check if debt is due today
                         try:
-                            debt_date_obj = datetime.strptime(debt_date, '%Y-%m-%d').date()
+                            # Try to parse date in multiple formats
+                            debt_date_obj = None
+                            date_formats = [
+                                '%Y-%m-%d',      # 2025-11-07
+                                '%d/%m/%Y',      # 07/11/2025
+                                '%m/%d/%Y',      # 11/07/2025 (US format)
+                                '%d-%m-%Y',      # 07-11-2025
+                                '%Y/%m/%d',      # 2025/11/07
+                            ]
+                            
+                            for date_format in date_formats:
+                                try:
+                                    debt_date_obj = datetime.strptime(debt_date, date_format).date()
+                                    break
+                                except ValueError:
+                                    continue
+                            
+                            if debt_date_obj is None:
+                                logger.warning(f"Could not parse date format for debt {debt_id}: {debt_date}")
+                                continue
+                            
                             if debt_date_obj == today:
                                 debt_info = {
                                     'id': debt_id,
@@ -251,7 +271,27 @@ class SimpleDebtScheduler:
                         
                         # Check if debt is overdue
                         try:
-                            debt_date_obj = datetime.strptime(debt_date, '%Y-%m-%d').date()
+                            # Try to parse date in multiple formats
+                            debt_date_obj = None
+                            date_formats = [
+                                '%Y-%m-%d',      # 2025-11-07
+                                '%d/%m/%Y',      # 07/11/2025
+                                '%m/%d/%Y',      # 11/07/2025 (US format)
+                                '%d-%m-%Y',      # 07-11-2025
+                                '%Y/%m/%d',      # 2025/11/07
+                            ]
+                            
+                            for date_format in date_formats:
+                                try:
+                                    debt_date_obj = datetime.strptime(debt_date, date_format).date()
+                                    break
+                                except ValueError:
+                                    continue
+                            
+                            if debt_date_obj is None:
+                                logger.warning(f"Could not parse date format for debt {debt_id}: {debt_date}")
+                                continue
+                            
                             if debt_date_obj < today:
                                 days_overdue = (today - debt_date_obj).days
                                 
