@@ -22,6 +22,7 @@ class Config:
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     BASE_URL = os.getenv('BASE_URL', 'https://9c390d019f26.ngrok-free.app')
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
+    CRON_SECRET_KEY = os.getenv('CRON_SECRET_KEY', SECRET_KEY)  # Defaults to SECRET_KEY if not set
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
     
     # Test flags

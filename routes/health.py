@@ -19,11 +19,24 @@ def ready():
 
 @bp.route('/keep-alive', methods=['GET'])
 def keep_alive():
-    """Keep alive endpoint - pinged every 7 minutes to prevent Render.com spin-down"""
+    """Keep alive endpoint - pinged every 7 minutes to prevent Render.com spin-down
+    
+    Can be used with cron-jobs.org or any external cron service.
+    No authentication required for this endpoint.
+    """
     return jsonify({
         'status': 'alive',
         'timestamp': datetime.now().isoformat(),
         'message': 'Server is active'
+    }), 200
+
+
+@bp.route('/ping', methods=['GET'])
+def ping():
+    """Simple ping endpoint for cron-jobs.org - same as keep-alive"""
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat()
     }), 200
 
 

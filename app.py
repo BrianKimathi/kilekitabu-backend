@@ -19,6 +19,7 @@ from routes.payment import bp as payment_bp
 from routes.config_info import bp as config_info_bp
 from routes.subscription import bp as subscription_bp
 from routes.cybersource import cybersource_bp
+from routes.cron import bp as cron_bp
 
 # Initialize logging
 init_logging()
@@ -222,6 +223,7 @@ app.register_blueprint(payment_bp)
 app.register_blueprint(subscription_bp)
 app.register_blueprint(config_info_bp)
 app.register_blueprint(cybersource_bp)
+app.register_blueprint(cron_bp)
 
 # Health check endpoint
 @app.route('/', methods=['GET'])

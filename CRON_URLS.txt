@@ -1,0 +1,73 @@
+================================================================================
+CRON-JOBS.ORG QUICK REFERENCE
+================================================================================
+
+Replace YOUR_APP_URL with your Render.com URL (e.g., https://your-app.onrender.com)
+Replace YOUR_SECRET_KEY with your SECRET_KEY from .env file
+
+================================================================================
+1. KEEP SERVER ACTIVE (Every 7 minutes)
+================================================================================
+URL: https://YOUR_APP_URL/api/health/keep-alive
+Method: GET
+Auth: None required
+Schedule: */7 * * * * (every 7 minutes)
+
+================================================================================
+2. LOW CREDIT NOTIFICATIONS (Daily at 8:00 AM)
+================================================================================
+URL: https://YOUR_APP_URL/api/cron/notifications/low-credit?key=YOUR_SECRET_KEY
+Method: GET
+Auth: Query parameter 'key' required
+Schedule: 0 8 * * * (daily at 8:00 AM UTC)
+
+================================================================================
+3. DEBT REMINDER NOTIFICATIONS (Daily at 9:00 AM)
+================================================================================
+URL: https://YOUR_APP_URL/api/cron/notifications/debt-reminders?key=YOUR_SECRET_KEY
+Method: GET
+Auth: Query parameter 'key' required
+Schedule: 0 9 * * * (daily at 9:00 AM UTC)
+
+================================================================================
+4. ALL NOTIFICATIONS (Daily at 9:00 AM)
+================================================================================
+URL: https://YOUR_APP_URL/api/cron/notifications/all?key=YOUR_SECRET_KEY
+Method: GET
+Auth: Query parameter 'key' required
+Schedule: 0 9 * * * (daily at 9:00 AM UTC)
+Note: Triggers both low credit and debt reminder notifications
+
+================================================================================
+ALTERNATIVE: Simple Ping Endpoint
+================================================================================
+URL: https://YOUR_APP_URL/api/health/ping
+Method: GET
+Auth: None required
+Purpose: Same as keep-alive, simpler name
+
+================================================================================
+TESTING
+================================================================================
+Test keep-alive:
+curl https://YOUR_APP_URL/api/health/keep-alive
+
+Test low credit notifications:
+curl "https://YOUR_APP_URL/api/cron/notifications/low-credit?key=YOUR_SECRET_KEY"
+
+Test debt reminders:
+curl "https://YOUR_APP_URL/api/cron/notifications/debt-reminders?key=YOUR_SECRET_KEY"
+
+Test all notifications:
+curl "https://YOUR_APP_URL/api/cron/notifications/all?key=YOUR_SECRET_KEY"
+
+================================================================================
+TIMEZONE NOTE
+================================================================================
+Cron-jobs.org uses UTC timezone.
+- 8:00 AM EAT (UTC+3) = 5:00 AM UTC
+- 9:00 AM EAT (UTC+3) = 6:00 AM UTC
+Adjust schedules accordingly.
+
+================================================================================
+
