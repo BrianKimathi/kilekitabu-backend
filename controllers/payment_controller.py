@@ -328,47 +328,87 @@ class PaymentController:
             user_id = payment.get('user_id')
             print(f"[mpesa_callback] User ID: {user_id}")
             
+            # Check if payment was already processed to prevent duplicate credit additions
+            payment_status = payment.get('status', 'pending')
+            if payment_status == 'completed':
+                print(f"[mpesa_callback] ⚠️ Payment already processed (status: {payment_status}). Skipping credit update.")
+                return jsonify({'status': 'ok', 'message': 'already_processed'}), 200
+            
             user_ref = self.db.reference(f'registeredUser/{user_id}')
             user_data = user_ref.get() or {}
             print(f"[mpesa_callback] Current user data - credit_balance: {user_data.get('credit_balance')}, total_payments: {user_data.get('total_payments')}")
             
             if result_code == 0 or result_code == '0':
                 print(f"[mpesa_callback] ✅ Payment successful (ResultCode: {result_code})")
-                # Mark payment complete
-                payment_ref.update({
-                    'status': 'completed',
-                    'provider_data': stk,
-                    'completed_at': datetime.datetime.now().isoformat(),
-                })
                 
-                # Credit days
-                credit_days = int(float(payment.get('amount', 0)) / self.config.DAILY_RATE)
-                current_credit = int(user_data.get('credit_balance', 0))
+                # Get credit_days from payment record (already calculated during initiation)
+                # Fallback to recalculating if not stored
+                stored_credit_days = payment.get('credit_days')
+                payment_amount = float(payment.get('amount', 0))
+                
+                if stored_credit_days is not None:
+                    credit_days = int(stored_credit_days)
+                    print(f"[mpesa_callback] Using stored credit_days: {credit_days}")
+                else:
+                    # Fallback: recalculate if not stored
+                    credit_days = int(payment_amount / self.config.DAILY_RATE)
+                    print(f"[mpesa_callback] ⚠️ credit_days not stored, recalculated: {credit_days} (amount={payment_amount}, rate={self.config.DAILY_RATE})")
+                
+                # Get current credit balance (handle both int and float from Firebase)
+                current_credit_raw = user_data.get('credit_balance', 0)
+                if isinstance(current_credit_raw, float):
+                    current_credit = int(current_credit_raw)
+                elif isinstance(current_credit_raw, int):
+                    current_credit = current_credit_raw
+                else:
+                    try:
+                        current_credit = int(float(current_credit_raw))
+                    except (ValueError, TypeError):
+                        current_credit = 0
+                
                 new_credit = current_credit + credit_days
+                
+                print(f"[mpesa_callback] Credit calculation: current={current_credit}, adding={credit_days}, new={new_credit}")
                 
                 # Update monthly spend
                 now = datetime.datetime.now(datetime.timezone.utc)
                 month_key = now.strftime('%Y-%m')
-                monthly = user_data.get('monthly_paid', {})
+                monthly = user_data.get('monthly_paid', {}) or {}
                 month_spend = float(monthly.get(month_key, 0))
-                month_spend += float(payment.get('amount', 0))
+                month_spend += payment_amount
                 monthly[month_key] = month_spend
                 
                 # Update user with credit and payment info
+                # Store credit_balance as integer to match app expectations
                 now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                user_ref.update({
-                    'credit_balance': new_credit,
-                    'total_payments': float(user_data.get('total_payments', 0)) + float(payment.get('amount', 0)),
+                update_data = {
+                    'credit_balance': int(new_credit),  # Store as integer
+                    'total_payments': float(user_data.get('total_payments', 0)) + payment_amount,
                     'monthly_paid': monthly,
                     'last_payment_date': now_iso,  # Prevent credit deduction on payment day
                     'updated_at': now_iso,
+                }
+                
+                print(f"[mpesa_callback] Updating user with: {update_data}")
+                user_ref.update(update_data)
+                
+                # Mark payment complete AFTER updating credits
+                payment_ref.update({
+                    'status': 'completed',
+                    'provider_data': stk,
+                    'completed_at': now_iso,
+                    'credit_days_added': credit_days,  # Store for audit
                 })
                 
-                print(f"[mpesa_callback] ✅ Payment completed: user_id={user_id}, amount={payment.get('amount')}, credit_days={credit_days}, new_credit={new_credit}")
+                print(f"[mpesa_callback] ✅ Payment completed: user_id={user_id}, amount={payment_amount}, credit_days={credit_days}, new_credit={new_credit}")
                 
                 # Verify the update was successful
                 updated_user_data = user_ref.get() or {}
-                print(f"[mpesa_callback] ✅ Verified update - credit_balance: {updated_user_data.get('credit_balance')}")
+                verified_credit = updated_user_data.get('credit_balance')
+                print(f"[mpesa_callback] ✅ Verified update - credit_balance: {verified_credit} (expected: {new_credit})")
+                
+                if verified_credit != new_credit:
+                    print(f"[mpesa_callback] ⚠️ WARNING: Credit balance mismatch! Expected {new_credit}, got {verified_credit}")
                 
                 return jsonify({'status': 'ok'})
             else:
