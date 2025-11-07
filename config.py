@@ -1,83 +1,69 @@
+"""Configuration settings for KileKitabu backend."""
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
+
 class Config:
+    """Application configuration."""
+    
     # Firebase Configuration
-    FIREBASE_CREDENTIALS_PATH = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json')
-    FIREBASE_DATABASE_URL = os.getenv('FIREBASE_DATABASE_URL', 'https://kile-kitabu-default-rtdb.firebaseio.com')
+    FIREBASE_CREDENTIALS_PATH = os.getenv(
+        'FIREBASE_CREDENTIALS_PATH',
+        'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json'
+    )
+    FIREBASE_DATABASE_URL = os.getenv(
+        'FIREBASE_DATABASE_URL',
+        'https://kile-kitabu-default-rtdb.firebaseio.com'
+    )
     
     # Application Configuration
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
-    
-    # Credit System Configuration
-    DAILY_RATE = float(os.getenv('DAILY_RATE', '1.0'))  # Cost per day in KES
-    FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '7'))  # Free trial period in days
-    
-    # Pesapal Configuration
-    PESAPAL_CONSUMER_KEY = os.getenv('PESAPAL_CONSUMER_KEY', 'sRE8q61NY+L2TophDXPUsfF/fLZ+Wz7Z')
-    PESAPAL_CONSUMER_SECRET = os.getenv('PESAPAL_CONSUMER_SECRET', 'VgLnSaRRXpuZsH69EMRH62uFmdk=')
-    
-    # Pesapal Environment (sandbox or production)
-    PESAPAL_ENVIRONMENT = os.getenv('PESAPAL_ENVIRONMENT', 'production')  # Default to sandbox for development
-    
-    # Pesapal Base URLs
-    PESAPAL_BASE_URL = os.getenv('PESAPAL_BASE_URL', 
-        'https://cybqa.pesapal.com/pesapalv3' if PESAPAL_ENVIRONMENT == 'sandbox'
-        else 'https://pay.pesapal.com/v3'
-    )
-    
-    # Ensure base URL doesn't end with /api to avoid double /api in requests
-    print(f"Original PESAPAL_BASE_URL: {PESAPAL_BASE_URL}")
-    if PESAPAL_BASE_URL.endswith('/api'):
-        PESAPAL_BASE_URL = PESAPAL_BASE_URL[:-4]
-        print(f"Fixed PESAPAL_BASE_URL: {PESAPAL_BASE_URL}")
-    else:
-        print(f"PESAPAL_BASE_URL is correct: {PESAPAL_BASE_URL}")
-    
-    # Application Configuration
-    BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
-    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
-    
-    # IPN Configuration for Live Environment
-    IPN_URL = f"{BASE_URL}/api/payment/ipn"
-    CALLBACK_URL = f"{BASE_URL}/api/payment/callback"
-    CANCELLATION_URL = f"{BASE_URL}/api/payment/cancel"
-    
-    # Database Configuration (if using database)
-    DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///kilekitabu.db')
-    
-    # Security Configuration
+    BASE_URL = os.getenv('BASE_URL', 'https://9c390d019f26.ngrok-free.app')
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
-    
-    # Logging Configuration
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
     
-    # Payment Configuration
-    CURRENCY = 'KES'
-    COUNTRY_CODE = 'KE'
+    # Test flags
+    ALLOW_UNAUTH_TEST = os.getenv('ALLOW_UNAUTH_TEST', 'False').lower() == 'true'
+    FORCE_TRIAL_END = os.getenv('FORCE_TRIAL_END', 'False').lower() == 'true'
     
     # Subscription Configuration
-    DEFAULT_SUBSCRIPTION_FREQUENCY = 'MONTHLY'
-    DEFAULT_SUBSCRIPTION_DURATION_DAYS = 365
+    DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
+    FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '14'))  # Free trial period in days
+    MONTHLY_CAP_KES = float(os.getenv('MONTHLY_CAP_KES', '150'))  # Monthly cap in KES
     
-    # Error Messages
-    ERROR_MESSAGES = {
-        'missing_credentials': 'Pesapal credentials not configured',
-        'invalid_amount': 'Invalid payment amount',
-        'payment_failed': 'Payment processing failed',
-        'network_error': 'Network connection error',
-        'invalid_response': 'Invalid response from payment provider',
-    }
+    # M-Pesa Daraja Configuration
+    MPESA_ENV = os.getenv('MPESA_ENV', 'sandbox')  # sandbox | production
+    MPESA_CONSUMER_KEY = os.getenv('MPESA_CONSUMER_KEY', '')
+    MPESA_CONSUMER_SECRET = os.getenv('MPESA_CONSUMER_SECRET', '')
+    MPESA_SHORT_CODE = os.getenv('MPESA_SHORT_CODE', '174379')
+    MPESA_PASSKEY = os.getenv('MPESA_PASSKEY', 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919')
+    MPESA_CALLBACK_URL = f"{BASE_URL}/api/mpesa/callback"
     
-    # Success Messages
-    SUCCESS_MESSAGES = {
-        'payment_created': 'Payment request created successfully',
-        'payment_completed': 'Payment completed successfully',
-        'payment_cancelled': 'Payment cancelled successfully',
-        'refund_requested': 'Refund request submitted successfully',
+    # CyberSource Configuration
+    CYBERSOURCE_ENV = os.getenv('CYBERSOURCE_ENV', 'sandbox')  # sandbox | production
+    CYBERSOURCE_MERCHANT_ID = os.getenv('CYBERSOURCE_MERCHANT_ID', '')
+    CYBERSOURCE_API_KEY_ID = os.getenv('CYBERSOURCE_API_KEY_ID', '')
+    CYBERSOURCE_SECRET_KEY = os.getenv('CYBERSOURCE_SECRET_KEY', '')
+    CYBERSOURCE_WEBHOOK_SECRET = os.getenv('CYBERSOURCE_WEBHOOK_SECRET', '')  # For signature validation
+    
+    # CyberSource API URLs
+    CYBERSOURCE_API_BASE = (
+        'https://apitest.cybersource.com' if CYBERSOURCE_ENV == 'sandbox' 
+        else 'https://api.cybersource.com'
+    )
+    CYBERSOURCE_CALLBACK_URL = os.getenv(
+        'CYBERSOURCE_CALLBACK_URL',
+        f"{BASE_URL}/api/cybersource/webhook"
+    )
+    
+    # Validation Rules
+    VALIDATION_RULES = {
+        'min_amount': 10.0,
+        'max_amount': 1000000.0,
+        'phone_regex': r'^\+?254\d{9}$',
+        'email_regex': r'^[\w\.-]+@[\w\.-]+\.\w+$',
     }
     
     # Payment Status Codes
@@ -86,57 +72,4 @@ class Config:
         'COMPLETED': 'COMPLETED',
         'FAILED': 'FAILED',
         'CANCELLED': 'CANCELLED',
-        'REVERSED': 'REVERSED',
     }
-    
-    # Subscription Frequencies
-    SUBSCRIPTION_FREQUENCIES = ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']
-    
-    # Validation Rules
-    VALIDATION_RULES = {
-        'min_amount': 1.0,
-        'max_amount': 1000000.0,
-        'phone_regex': r'^\+?254\d{9}$',  # Kenyan phone number format
-        'email_regex': r'^[\w\.-]+@[\w\.-]+\.\w+$',
-    }
-    
-    @classmethod
-    def validate_config(cls):
-        """Validate that all required configuration is set"""
-        required_vars = [
-            'PESAPAL_CONSUMER_KEY',
-            'PESAPAL_CONSUMER_SECRET',
-        ]
-        
-        missing_vars = []
-        for var in required_vars:
-            if not getattr(cls, var) or getattr(cls, var).startswith('your_'):
-                missing_vars.append(var)
-        
-        if missing_vars:
-            raise ValueError(f"Missing required configuration: {', '.join(missing_vars)}")
-        
-        return True
-    
-    @classmethod
-    def get_pesapal_urls(cls):
-        """Get Pesapal API URLs based on environment"""
-        base_url = cls.PESAPAL_BASE_URL
-        return {
-            'auth': f"{base_url}/api/Auth/RequestToken",
-            'submit_order': f"{base_url}/api/Transactions/SubmitOrderRequest",
-            'get_status': f"{base_url}/api/Transactions/GetTransactionStatus",
-            'register_ipn': f"{base_url}/api/URLSetup/RegisterIPN",
-            'cancel_order': f"{base_url}/api/Transactions/CancelOrder",
-            'refund_request': f"{base_url}/api/Transactions/RefundRequest",
-        }
-    
-    @classmethod
-    def is_sandbox(cls):
-        """Check if running in sandbox mode"""
-        return cls.PESAPAL_ENVIRONMENT == 'sandbox'
-    
-    @classmethod
-    def is_production(cls):
-        """Check if running in production mode"""
-        return cls.PESAPAL_ENVIRONMENT == 'production' 

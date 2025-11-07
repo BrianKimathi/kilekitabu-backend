@@ -5,6 +5,35 @@ import uuid
 bp = Blueprint('notifications', __name__, url_prefix='/api/notifications')
 
 
+@bp.route('/register-token', methods=['POST'])
+def register_token():
+    """Register FCM token for a user."""
+    db = current_app.config.get('DB')
+    
+    try:
+        if not db:
+            return jsonify({'error': 'Firebase not available'}), 500
+        
+        data = request.get_json(force=True) or {}
+        user_id = data.get('user_id')
+        token = data.get('token')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+        if not token:
+            return jsonify({'error': 'token is required'}), 400
+        
+        # Store FCM token
+        db.reference('fcm_tokens').child(user_id).set(token)
+        
+        return jsonify({
+            'message': 'Token registered successfully',
+            'user_id': user_id
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @bp.route('/trigger-user', methods=['GET', 'POST'])
 def trigger_user():
     db = current_app.config.get('DB')

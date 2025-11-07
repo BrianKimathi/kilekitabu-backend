@@ -1,41 +1,38 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+"""Main application entry point for KileKitabu backend."""
+import os
+import firebase_admin
+from firebase_admin import credentials
 from core.app_factory import create_app
 from core.logging_config import init_logging
-from routes.notifications import bp as notifications_bp
-from routes.health import bp as health_bp
-import firebase_admin
-from firebase_admin import credentials, auth
-import datetime
-import uuid
-from functools import wraps
-import os
 from config import Config
-from pesapal_integration_v2 import PesaPalIntegration
-from simple_debt_scheduler import SimpleDebtScheduler
-from fcm_v1_service import FCMV1Service, MockFCMV1Service
-from sms_reminder_scheduler import initialize_sms_scheduler, get_sms_scheduler
+from services.mpesa_integration import MpesaClient
+from services.cybersource_integration import CyberSourceClient
+from services.fcm_v1_service import FCMV1Service, MockFCMV1Service
+from services.simple_debt_scheduler import SimpleDebtScheduler
+from services.low_credit_scheduler import LowCreditScheduler
+from services.sms_reminder_scheduler import initialize_sms_scheduler, get_sms_scheduler
+from routes.health import bp as health_bp
+from routes.notifications import bp as notifications_bp
+from routes.payment import bp as payment_bp
+from routes.config_info import bp as config_info_bp
+from routes.subscription import bp as subscription_bp
+from routes.cybersource import cybersource_bp
 
+# Initialize logging
 init_logging()
-app = create_app(Config)
-CRON_SECRET = os.getenv('CRON_SECRET')  # Optional: set to a strong value in your env
 
-# Initialize Firebase Admin SDK with Realtime Database
+# Create Flask app
+app = create_app(Config)
+
+# Initialize Firebase Admin SDK
 db = None
 try:
-    # Check if Firebase is already initialized
     try:
         firebase_admin.get_app()
-        print("Firebase already initialized")
         from firebase_admin import db
+        print("Firebase already initialized")
     except ValueError:
-        # Firebase not initialized, initialize it
-        print(f"Looking for Firebase credentials at: {Config.FIREBASE_CREDENTIALS_PATH}")
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Files in current directory: {os.listdir('.')}")
-        
         if os.path.exists(Config.FIREBASE_CREDENTIALS_PATH):
-            print("Firebase credentials file found, initializing...")
             cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
             firebase_admin.initialize_app(cred, {
                 'databaseURL': Config.FIREBASE_DATABASE_URL
@@ -43,73 +40,18 @@ try:
             from firebase_admin import db
             print("Firebase initialized successfully")
         else:
-            print(f"Firebase credentials file not found: {Config.FIREBASE_CREDENTIALS_PATH}")
-            print("Firebase will not be available - authentication will fail")
+            print(f"Firebase credentials not found: {Config.FIREBASE_CREDENTIALS_PATH}")
 except Exception as e:
     print(f"Firebase initialization error: {e}")
-    print("Firebase will not be available - authentication will fail")
 
-# Initialize PesaPal Integration with error handling
-try:
-    pesapal = PesaPalIntegration()
-    print("PesaPal integration initialized successfully")
-except Exception as e:
-    print(f"PesaPal initialization error: {e}")
-    pesapal = None  # Set to None so we can check if it's available
-
-# Initialize FCM Service and Scheduler
-fcm_service = None
-notification_scheduler = None
-if db is not None:
-    try:
-        # Initialize FCM v1 service using service account credentials
-        project_id = os.getenv('FIREBASE_PROJECT_ID', 'kile-kitabu')
-        credentials_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json')
-        if os.path.exists(credentials_path):
-            fcm_service = FCMV1Service(credentials_path, project_id)
-        else:
-            fcm_service = MockFCMV1Service()
-        notification_scheduler = SimpleDebtScheduler(fcm_service)
-        notification_scheduler.start_scheduler()
-        print("FCM v1 service and simple notification scheduler initialized successfully")
-        
-        # Initialize SMS reminder scheduler
-        sms_api_key = os.getenv('SMS_API_KEY')
-        initialize_sms_scheduler(db, sms_api_key, fcm_service)
-        print("SMS reminder scheduler initialized successfully")
-    except Exception as e:
-        print(f"FCM initialization error: {e}")
-        fcm_service = None
-        notification_scheduler = None
-
-# Expose core services for blueprints
-app.config['DB'] = db
-app.config['FCM_SERVICE'] = fcm_service
-app.config['GET_SMS_SCHEDULER'] = get_sms_scheduler
-
-# Blueprints
-app.register_blueprint(notifications_bp)
-app.register_blueprint(health_bp)
-
-# Configuration
-DAILY_RATE = Config.DAILY_RATE
-FREE_TRIAL_DAYS = Config.FREE_TRIAL_DAYS
-
-def safe_firebase_operation(operation, *args, **kwargs):
-    """Safely execute Firebase operations with error handling"""
-    try:
-        return operation(*args, **kwargs)
-    except Exception as e:
-        print(f"Firebase operation failed: {e}")
-        return None
-
-# Mock Firebase service for when Firebase is not available
+# Mock Firebase service classes (defined at top-level to avoid indentation issues)
 class MockFirebaseService:
     def __init__(self):
         self.data = {}
     
     def reference(self, path):
         return MockFirebaseReference(path, self.data)
+
 
 class MockFirebaseReference:
     def __init__(self, path, data_store):
@@ -123,15 +65,11 @@ class MockFirebaseReference:
     def get(self):
         if self.path in self.data_store:
             return self.data_store[self.path]
-        
-        # Handle nested references - look for keys that start with the path
         nested_data = {}
         for key, value in self.data_store.items():
             if key.startswith(self.path + '/'):
-                # Extract the nested key (remove the parent path)
                 nested_key = key[len(self.path) + 1:]
                 nested_data[nested_key] = value
-        
         return nested_data if nested_data else None
     
     def update(self, value):
@@ -139,1754 +77,146 @@ class MockFirebaseReference:
             self.data_store[self.path].update(value)
         return self
 
-# Use mock Firebase if real Firebase is not available
+
+# Fallback to mock service when Firebase DB is unavailable
 if db is None:
-    print("Firebase not available, using mock service")
     db = MockFirebaseService()
-else:
+    print("Using mock Firebase service")
+
+# Initialize M-Pesa Client
+mpesa_client = None
+try:
+    print(f"[App Init] Checking M-Pesa configuration...")
+    print(f"[App Init] MPESA_CONSUMER_KEY: {'SET' if Config.MPESA_CONSUMER_KEY else 'NOT SET'}")
+    print(f"[App Init] MPESA_CONSUMER_SECRET: {'SET' if Config.MPESA_CONSUMER_SECRET else 'NOT SET'}")
+    print(f"[App Init] MPESA_SHORT_CODE: {Config.MPESA_SHORT_CODE}")
+    print(f"[App Init] MPESA_PASSKEY: {'SET' if Config.MPESA_PASSKEY else 'NOT SET'} (length: {len(Config.MPESA_PASSKEY) if Config.MPESA_PASSKEY else 0}, preview: {Config.MPESA_PASSKEY[:20] if Config.MPESA_PASSKEY else 'N/A'}...)")
+    print(f"[App Init] MPESA_CALLBACK_URL: {Config.MPESA_CALLBACK_URL}")
+    print(f"[App Init] MPESA_ENV: {Config.MPESA_ENV}")
+    
+    if all([
+        Config.MPESA_CONSUMER_KEY,
+        Config.MPESA_CONSUMER_SECRET,
+        Config.MPESA_SHORT_CODE,
+        Config.MPESA_PASSKEY,
+    ]):
+        mpesa_client = MpesaClient(
+            consumer_key=Config.MPESA_CONSUMER_KEY,
+            consumer_secret=Config.MPESA_CONSUMER_SECRET,
+            short_code=Config.MPESA_SHORT_CODE,
+            passkey=Config.MPESA_PASSKEY,
+            callback_url=Config.MPESA_CALLBACK_URL,
+            env=Config.MPESA_ENV,
+        )
+        print("✅ M-Pesa client initialized successfully")
+    else:
+        missing = []
+        if not Config.MPESA_CONSUMER_KEY:
+            missing.append("MPESA_CONSUMER_KEY")
+        if not Config.MPESA_CONSUMER_SECRET:
+            missing.append("MPESA_CONSUMER_SECRET")
+        if not Config.MPESA_SHORT_CODE:
+            missing.append("MPESA_SHORT_CODE")
+        if not Config.MPESA_PASSKEY:
+            missing.append("MPESA_PASSKEY")
+        print(f"❌ M-Pesa not configured; missing: {', '.join(missing)}")
+except Exception as e:
+    print(f"❌ M-Pesa initialization error: {e}")
+    import traceback
+    print(f"Traceback: {traceback.format_exc()}")
+
+# Initialize CyberSource Client
+cybersource_client = None
+try:
+    print(f"[App Init] Checking CyberSource configuration...")
+    print(f"[App Init] CYBERSOURCE_MERCHANT_ID: {'SET' if Config.CYBERSOURCE_MERCHANT_ID else 'NOT SET'}")
+    print(f"[App Init] CYBERSOURCE_API_KEY_ID: {'SET' if Config.CYBERSOURCE_API_KEY_ID else 'NOT SET'}")
+    print(f"[App Init] CYBERSOURCE_SECRET_KEY: {'SET' if Config.CYBERSOURCE_SECRET_KEY else 'NOT SET'}")
+    print(f"[App Init] CYBERSOURCE_ENV: {Config.CYBERSOURCE_ENV}")
+    print(f"[App Init] CYBERSOURCE_API_BASE: {Config.CYBERSOURCE_API_BASE}")
+    
+    if all([
+        Config.CYBERSOURCE_MERCHANT_ID,
+        Config.CYBERSOURCE_API_KEY_ID,
+        Config.CYBERSOURCE_SECRET_KEY,
+    ]):
+        cybersource_client = CyberSourceClient(
+            merchant_id=Config.CYBERSOURCE_MERCHANT_ID,
+            api_key_id=Config.CYBERSOURCE_API_KEY_ID,
+            secret_key=Config.CYBERSOURCE_SECRET_KEY,
+            api_base=Config.CYBERSOURCE_API_BASE,
+        )
+        print("✅ CyberSource client initialized successfully")
+    else:
+        missing = []
+        if not Config.CYBERSOURCE_MERCHANT_ID:
+            missing.append("CYBERSOURCE_MERCHANT_ID")
+        if not Config.CYBERSOURCE_API_KEY_ID:
+            missing.append("CYBERSOURCE_API_KEY_ID")
+        if not Config.CYBERSOURCE_SECRET_KEY:
+            missing.append("CYBERSOURCE_SECRET_KEY")
+        print(f"❌ CyberSource not configured; missing: {', '.join(missing)}")
+except Exception as e:
+    print(f"❌ CyberSource initialization error: {e}")
+    import traceback
+    print(f"Traceback: {traceback.format_exc()}")
+
+# Initialize FCM Service and Schedulers
+fcm_service = None
+notification_scheduler = None
+if db is not None:
     try:
-        # Test if Firebase is working
-        db.reference('test').get()
-        print("Firebase is working")
-    except:
-        print("Firebase not working, switching to mock service")
-        db = MockFirebaseService()
+        project_id = os.getenv('FIREBASE_PROJECT_ID', 'kile-kitabu')
+        credentials_path = os.getenv(
+            'FIREBASE_CREDENTIALS_PATH',
+            'kile-kitabu-firebase-adminsdk-pjk21-68cbd0c3b4.json'
+        )
+        if os.path.exists(credentials_path):
+            fcm_service = FCMV1Service(credentials_path, project_id)
+        else:
+            fcm_service = MockFCMV1Service()
+        
+        notification_scheduler = SimpleDebtScheduler(fcm_service)
+        notification_scheduler.start_scheduler()
+        print("FCM service and notification scheduler initialized")
+        
+        # Initialize low credit notification scheduler
+        low_credit_scheduler = LowCreditScheduler(fcm_service)
+        low_credit_scheduler.start_scheduler()
+        print("Low credit notification scheduler initialized")
+        
+        sms_api_key = os.getenv('SMS_API_KEY')
+        initialize_sms_scheduler(db, sms_api_key, fcm_service)
+        print("SMS reminder scheduler initialized")
+    except Exception as e:
+        print(f"FCM initialization error: {e}")
 
-def require_auth(f):
-    """Decorator to require Firebase authentication"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        try:
-            # Check if Firebase is available
-            if db is None:
-                print("Firebase not initialized - authentication unavailable")
-                return jsonify({'error': 'Authentication service unavailable'}), 503
-            
-            auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                print("No Authorization header or invalid format")
-                return jsonify({'error': 'No token provided'}), 401
-            
-            token = auth_header.split('Bearer ')[1]
-            try:
-                # Verify Firebase ID token
-                print(f"Verifying token: {token[:20]}...")
-                decoded_token = auth.verify_id_token(token)
-                request.user_id = decoded_token['uid']
-                print(f"Token verified successfully for user: {decoded_token['uid']}")
-                return f(*args, **kwargs)
-            except Exception as e:
-                print(f"Token verification failed: {str(e)}")
-                return jsonify({'error': 'Invalid Firebase token'}), 401
-        except Exception as e:
-            print(f"Authentication decorator error: {e}")
-            return jsonify({'error': 'Authentication service error'}), 500
-    
-    return decorated_function
+# Configure app with services
+app.config['DB'] = db
+app.config['CONFIG'] = Config
+app.config['FCM_SERVICE'] = fcm_service
+app.config['MPESA_CLIENT'] = mpesa_client
+app.config['cybersource_client'] = cybersource_client
+app.config['GET_SMS_SCHEDULER'] = get_sms_scheduler
 
-def check_credit_required(f):
-    """Decorator to check if user has credit before allowing action"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        user_id = request.user_id
-        
-        # Get user data from Realtime Database
-        user_ref = db.reference(f'registeredUser/{user_id}')
-        user_data = user_ref.get()
-        
-        if not user_data:
-            return jsonify({'error': 'User not found'}), 404
-        
-        registration_date_str = user_data.get('registration_date')
-        
-        # Check free trial
-        if registration_date_str:
-            registration_date = datetime.datetime.fromisoformat(registration_date_str.replace('Z', '+00:00'))
-            trial_end = registration_date + datetime.timedelta(days=FREE_TRIAL_DAYS)
-            if datetime.datetime.now(datetime.timezone.utc) < trial_end:
-                return f(*args, **kwargs)
-        
-        # Check credit balance
-        credit_balance = user_data.get('credit_balance', 0)
-        if credit_balance <= 0:
-            return jsonify({
-                'error': 'Insufficient credit',
-                'message': 'Please purchase credit to continue using the app',
-                'required_payment': True
-            }), 402
-        
-        return f(*args, **kwargs)
-    
-    return decorated_function
+# Register blueprints
+app.register_blueprint(health_bp)
+app.register_blueprint(notifications_bp)
+app.register_blueprint(payment_bp)
+app.register_blueprint(subscription_bp)
+app.register_blueprint(config_info_bp)
+app.register_blueprint(cybersource_bp)
 
+# Health check endpoint
 @app.route('/', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({
+    """Root health check endpoint."""
+    return {
         'status': 'healthy',
         'service': 'KileKitabu Backend',
-        'version': '1.0.0',
-        'features': [
-            'Usage-based payment system',
-            'PesaPal integration',
-            'Firebase authentication',
-            'Credit management'
-        ]
-    })
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint for testing"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'KileKitabu Backend',
-        'version': '1.0.0',
-        'timestamp': datetime.datetime.now().isoformat()
-    })
-
-@app.route('/send_notification', methods=['POST'])
-def send_notification_simple():
-    """Simple notification endpoint for testing"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        
-        if not user_id:
-            return jsonify({'error': 'user_id is required'}), 400
-        
-        # Use the existing notification service
-        if notification_scheduler:
-            success = notification_scheduler.send_manual_notification(
-                user_id, 
-                "Test Notification", 
-                "This is a test notification from KileKitabu",
-                {"type": "test", "user_id": user_id}
-            )
-            
-            if success:
-                return jsonify({'message': 'Notification sent successfully'}), 200
-            else:
-                return jsonify({'error': 'Failed to send notification'}), 500
-        else:
-            return jsonify({'error': 'FCM service not available'}), 500
-            
-    except Exception as e:
-        print(f"Error sending notification: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/check_sms_reminders', methods=['POST'])
-def check_sms_reminders_simple():
-    """Simple SMS reminder check endpoint for testing"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        
-        if not user_id:
-            return jsonify({'error': 'user_id is required'}), 400
-        
-        # Use the existing SMS reminder service
-        from sms_reminder_service import SMSReminderService
-        sms_service = SMSReminderService(db)
-        
-        # Check for due reminders
-        reminders = sms_service.check_due_reminders(user_id)
-        
-        return jsonify({
-            'message': 'SMS reminder check completed',
-            'reminders_found': len(reminders),
-            'reminders': reminders
-        }), 200
-            
-    except Exception as e:
-        print(f"Error checking SMS reminders: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
-@app.route('/get_user_debts/<user_id>', methods=['GET'])
-def get_user_debts_simple(user_id):
-    """Simple endpoint to get user debts for testing"""
-    try:
-        if not user_id:
-            return jsonify({'error': 'user_id is required'}), 400
-        
-        # Get user debts from Firebase
-        debts_ref = db.reference(f'UserDebts/{user_id}')
-        user_debts = debts_ref.get()
-        
-        if not user_debts:
-            return jsonify({
-                'message': 'No debts found for user',
-                'user_id': user_id,
-                'debts': []
-            }), 200
-        
-        # Format the response
-        formatted_debts = []
-        for phone_number, phone_data in user_debts.items():
-            if isinstance(phone_data, dict) and 'debts' in phone_data:
-                for debt_id, debt_data in phone_data.get('debts', {}).items():
-                    formatted_debts.append({
-                        'debt_id': debt_id,
-                        'phone_number': phone_number,
-                        'account_name': phone_data.get('accountName', 'Unknown'),
-                        'debt_amount': debt_data.get('debtAmount', '0'),
-                        'balance': debt_data.get('balance', '0'),
-                        'description': debt_data.get('description', ''),
-                        'date': debt_data.get('date', ''),
-                        'due_date': debt_data.get('dueDate', 0),
-                        'is_complete': debt_data.get('isComplete', False)
-                    })
-        
-        return jsonify({
-            'message': 'User debts retrieved successfully',
-            'user_id': user_id,
-            'total_debts': len(formatted_debts),
-            'debts': formatted_debts
-        }), 200
-            
-    except Exception as e:
-        print(f"Error getting user debts: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/test', methods=['GET'])
-def test_endpoint():
-    """Simple test endpoint without authentication"""
-    return jsonify({
-        'status': 'ok',
-        'message': 'Backend is running',
-        'timestamp': datetime.datetime.now().isoformat()
-    })
-
-
-@app.route('/api/user/credit', methods=['GET'])
-@require_auth
-def get_credit_info():
-    """Get user's credit information"""
-    user_id = request.user_id
-    user_ref = db.reference(f'registeredUser/{user_id}')
-    user_data = user_ref.get()
-    
-    if not user_data:
-        # Auto-register user if they don't exist
-        try:
-            user_info = auth.get_user(user_id)
-            current_time = datetime.datetime.now(datetime.timezone.utc)
-            
-            # Create user record
-            user_data = {
-                'user_id': user_id,
-                'email': user_info.email,
-                'registration_date': current_time.isoformat(),
-                'credit_balance': 0,
-                'total_payments': 0,
-                'created_at': current_time.isoformat(),
-                'updated_at': current_time.isoformat()
-            }
-            
-            user_ref.set(user_data)
-            
-        except Exception as e:
-            return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
-    
-    registration_date_str = user_data.get('registration_date')
-    
-    # Check if in free trial
-    if registration_date_str:
-        registration_date = datetime.datetime.fromisoformat(registration_date_str.replace('Z', '+00:00'))
-        trial_end = registration_date + datetime.timedelta(days=FREE_TRIAL_DAYS)
-        current_time = datetime.datetime.now(datetime.timezone.utc)
-        is_in_trial = current_time < trial_end
-        trial_days_remaining = max(0, (trial_end - current_time).days)
-    else:
-        is_in_trial = False
-        trial_days_remaining = 0
-    
-    return jsonify({
-        'credit_balance': user_data.get('credit_balance', 0),
-        'is_in_trial': is_in_trial,
-        'trial_days_remaining': trial_days_remaining,
-        'last_usage_date': user_data.get('last_usage_date'),
-        'total_payments': user_data.get('total_payments', 0)
-    })
-
-@app.route('/api/user/client', methods=['GET'])
-@require_auth
-def get_client_info():
-    """Get client information (alias for credit info)"""
-    user_id = request.user_id
-    user_ref = db.reference(f'registeredUser/{user_id}')
-    user_data = user_ref.get()
-    
-    if not user_data:
-        return jsonify({'error': 'User not found'}), 404
-    
-    registration_date_str = user_data.get('registration_date')
-    
-    # Check if in free trial
-    if registration_date_str:
-        registration_date = datetime.datetime.fromisoformat(registration_date_str.replace('Z', '+00:00'))
-        trial_end = registration_date + datetime.timedelta(days=FREE_TRIAL_DAYS)
-        current_time = datetime.datetime.now(datetime.timezone.utc)
-        is_in_trial = current_time < trial_end
-        trial_days_remaining = max(0, (trial_end - current_time).days)
-    else:
-        is_in_trial = False
-        trial_days_remaining = 0
-    
-    return jsonify({
-        'credit_balance': user_data.get('credit_balance', 0),
-        'is_in_trial': is_in_trial,
-        'trial_days_remaining': trial_days_remaining,
-        'last_usage_date': user_data.get('last_usage_date'),
-        'total_payments': user_data.get('total_payments', 0)
-    })
-
-@app.route('/api/payment/initiate', methods=['POST'])
-def initiate_payment():
-    """Initiate a payment through PesaPal"""
-    # For now, use a default user_id since we removed auth requirement
-    user_id = "default_user"  # You can modify this to get from request if needed
-    payment_data = request.json
-    amount = payment_data.get('amount')
-    try:
-        print("🧾 Payment initiate request received")
-        print(f"   ▶ user_id: {user_id}")
-        print(f"   ▶ amount: {amount}")
-        print(f"   ▶ environment: {Config.PESAPAL_ENVIRONMENT}")
-        print(f"   ▶ base_url: {Config.BASE_URL}")
-        # Avoid printing full secrets
-        print(f"   ▶ pesapal key set: {bool(Config.PESAPAL_CONSUMER_KEY)} | secret set: {bool(Config.PESAPAL_CONSUMER_SECRET)}")
-    except Exception as e:
-        print(f"⚠️ Failed to log payment initiation context: {e}")
-    
-    if not amount or amount <= 0:
-        return jsonify({'error': 'Invalid amount'}), 400
-    # Enforce minimum amount per business rule
-    if amount < Config.VALIDATION_RULES.get('min_amount', 10.0):
-        return jsonify({'error': f'Minimum amount is KES {int(Config.VALIDATION_RULES.get("min_amount", 10))}'}), 400
-    
-    # Calculate credit days
-    credit_days = int(amount / DAILY_RATE)
-    
-    # Create payment record
-    payment_id = str(uuid.uuid4())
-    payment_info = {
-        'payment_id': payment_id,
-        'user_id': user_id,
-        'amount': amount,
-        'credit_days': credit_days,
-        'status': 'pending',
-        'created_at': datetime.datetime.now().isoformat()
+        'version': '1.0.0'
     }
-    
-    # Store payment info in Firebase if available
-    try:
-        db.reference(f'payments/{payment_id}').set(payment_info)
-        print(f"✅ Payment stored: {payment_id}")
-        print(f"🔍 Mock Firebase data after storage: {db.data if hasattr(db, 'data') else 'No data attribute'}")
-    except Exception as e:
-        print(f"❌ Failed to store payment {payment_id}: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Check if PesaPal is available
-    if pesapal is None:
-        return jsonify({
-            'error': 'Payment service temporarily unavailable',
-            'message': 'Please try again later or contact support'
-        }), 503
-    
-    # Integrate with PesaPal API
-    payment_request_data = {
-        'payment_id': payment_id,
-        'amount': amount,
-        'credit_days': credit_days,
-        'email': payment_data.get('email'),
-        'phone': payment_data.get('phone'),
-        'first_name': payment_data.get('first_name'),
-        'last_name': payment_data.get('last_name')
-    }
-    
-    try:
-        print("📤 Creating Pesapal payment request with:")
-        print(f"   ▶ payment_id: {payment_id}")
-        print(f"   ▶ credit_days: {credit_days}")
-        print(f"   ▶ payer: {payment_data.get('first_name')} {payment_data.get('last_name')} | {payment_data.get('email')} | {payment_data.get('phone')}")
-        pesapal_response = pesapal.create_payment_request(payment_request_data)
-        print("📥 Pesapal create_payment_request response:")
-        print(f"   ▶ {pesapal_response}")
-        
-        if pesapal_response:
-            # Update payment record with PesaPal tracking ID
-            db.reference(f'payments/{payment_id}').update({
-                'order_tracking_id': pesapal_response['order_tracking_id']
-            })
-            
-            return jsonify({
-                'payment_id': payment_id,
-                'payment_url': pesapal_response['payment_url'],
-                'amount': float(amount),
-                'credits': float(credit_days),
-                'status': 'pending'
-            })
-        else:
-            # PesaPal integration failed
-            print("PesaPal integration failed")
-            if not Config.DEBUG:
-                # In production, do NOT create test payments
-                return jsonify({
-                    'error': 'Payment service temporarily unavailable',
-                    'message': 'Please try again later'
-                }), 503
-            # In debug mode, create a test payment for development
-            print("Creating test payment (DEBUG mode)")
-            
-            # Update payment record for test payment
-            db.reference(f'payments/{payment_id}').update({
-                'order_tracking_id': f'test-{payment_id}',
-                'status': 'test_payment'
-            })
-            
-            # For development/testing, automatically complete the payment
-            # In production, this should not happen
-            if Config.DEBUG:
-                # Simulate successful payment after 5 seconds
-                import threading
-                import time
-                
-                def complete_test_payment():
-                    time.sleep(5)
-                    # Update payment status
-                    db.reference(f'payments/{payment_id}').update({
-                        'status': 'completed',
-                        'completed_at': datetime.datetime.now().isoformat()
-                    })
-                    
-                    # Add credit to user
-                    user_ref = db.reference(f'registeredUser/{user_id}')
-                    user_data = user_ref.get()
-                    
-                    if user_data:
-                        current_credit = user_data.get('credit_balance', 0)
-                        new_credit = current_credit + credit_days
-                        total_payments = user_data.get('total_payments', 0) + amount
-                        
-                        user_ref.update({
-                            'credit_balance': new_credit,
-                            'total_payments': total_payments,
-                            'updated_at': datetime.datetime.now().isoformat()
-                        })
-                
-                # Start test payment completion in background
-                thread = threading.Thread(target=complete_test_payment)
-                thread.daemon = True
-                thread.start()
-            
-            return jsonify({
-                'payment_id': payment_id,
-                'payment_url': f"{Config.BASE_URL}/api/payment/test/{payment_id}",
-                'amount': float(amount),
-                'credits': float(credit_days),
-                'status': 'test_payment',
-                'message': 'Test payment created for development'
-            })
-    
-    except Exception as e:
-        import traceback
-        print("❌ Exception during Pesapal initiation")
-        print(f"   ▶ type: {type(e).__name__}")
-        print(f"   ▶ message: {e}")
-        traceback.print_exc()
-        return jsonify({'error': 'Payment initiation failed', 'details': str(e)}), 500
-
-@app.route('/api/payment/test/<payment_id>', methods=['GET'])
-def test_payment_page(payment_id):
-    """Test payment page for development"""
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Test Payment - KileKitabu</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body {{ font-family: Arial, sans-serif; text-align: center; padding: 20px; }}
-            .container {{ max-width: 400px; margin: 0 auto; }}
-            .success {{ color: #4CAF50; font-size: 24px; margin: 20px 0; }}
-            .info {{ color: #666; margin: 10px 0; }}
-            .button {{ background: #2196F3; color: white; padding: 15px 30px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin: 10px; }}
-            .button:hover {{ background: #1976D2; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🧪 Test Payment</h1>
-            <div class="success">✅ Payment Successful!</div>
-            <div class="info">Payment ID: {payment_id}</div>
-            <div class="info">This is a test payment for development.</div>
-            <div class="info">In production, this would redirect to Pesapal.</div>
-            <button class="button" onclick="window.close()">Close</button>
-        </div>
-        <script>
-            // Auto-close after 3 seconds
-            setTimeout(() => {{
-                window.close();
-            }}, 3000);
-        </script>
-    </body>
-    </html>
-    """
-
-@app.route('/api/payment/confirm', methods=['POST'])
-def confirm_payment():
-    """Confirm payment from PesaPal webhook"""
-    payment_data = request.json
-    payment_id = payment_data.get('payment_id')
-    status = payment_data.get('status')
-    
-    if not payment_id:
-        return jsonify({'error': 'Payment ID required'}), 400
-    
-    payment_ref = db.reference(f'payments/{payment_id}')
-    payment_data = safe_firebase_operation(lambda: payment_ref.get())
-    if not payment_data:
-        return jsonify({'error': 'Payment not found'}), 404
-    
-    payment_info = payment_data
-    user_id = payment_info['user_id']
-    
-    if status == 'completed':
-        # Update payment status
-        safe_firebase_operation(lambda: payment_ref.update({
-            'status': 'completed',
-            'completed_at': datetime.datetime.now().isoformat()
-        }))
-        
-        # Add credit to user
-        user_ref = db.reference(f'registeredUser/{user_id}')
-        user_data = user_ref.get()
-        
-        current_credit = user_data.get('credit_balance', 0)
-        new_credit = current_credit + payment_info['credit_days']
-        total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-        
-        user_ref.update({
-            'credit_balance': new_credit,
-            'total_payments': total_payments
-        })
-        
-        return jsonify({
-            'message': 'Payment confirmed',
-            'credit_added': payment_info['credit_days'],
-            'new_balance': new_credit
-        })
-    
-    return jsonify({'message': 'Payment status updated'})
-
-@app.route('/api/payment/ipn', methods=['POST'])
-def pesapal_ipn():
-    """Handle PesaPal IPN (Instant Payment Notification)"""
-    print("🔔 IPN Notification Received")
-    print(f"Headers: {dict(request.headers)}")
-    print(f"Form data: {request.form.to_dict()}")
-    print(f"JSON data: {request.get_json()}")
-    
-    # PesaPal can send data in either form format or JSON format
-    ipn_data = request.form.to_dict()
-    if not ipn_data:
-        ipn_data = request.get_json() or {}
-    
-    if not ipn_data:
-        print("❌ No IPN data received")
-        # Return 200 to PesaPal even if no data (as per documentation)
-        return jsonify({
-            'status': 'error',
-            'message': 'No IPN data received'
-        }), 200
-    
-    print(f"📋 IPN Data: {ipn_data}")
-    
-    # Extract key information from PesaPal IPN
-    order_tracking_id = ipn_data.get('OrderTrackingId')
-    order_notification_type = ipn_data.get('OrderNotificationType', 'IPNCHANGE')
-    order_merchant_reference = ipn_data.get('OrderMerchantReference')
-    
-    print(f"🔍 Extracted data:")
-    print(f"   Order Tracking ID: {order_tracking_id}")
-    print(f"   Order Notification Type: {order_notification_type}")
-    print(f"   Order Merchant Reference: {order_merchant_reference}")
-    
-    if not order_tracking_id:
-        print("❌ No OrderTrackingId in IPN data")
-        # Return 200 to PesaPal even if missing data (as per documentation)
-        return jsonify({
-            'status': 'error',
-            'message': 'Missing OrderTrackingId'
-        }), 200
-    
-    # Find payment by merchant reference (our payment ID)
-    payments_ref = db.reference('payments')
-    payments_data = payments_ref.get()
-    
-    payment_info = None
-    payment_id = None
-    
-    if payments_data:
-        for pid, payment in payments_data.items():
-            # Look for payment by merchant reference (our payment ID) first
-            if pid == order_merchant_reference:
-                payment_info = payment
-                payment_id = pid
-                break
-            # Fallback: also check by order tracking ID
-            elif payment.get('order_tracking_id') == order_tracking_id:
-                payment_info = payment
-                payment_id = pid
-                break
-    
-    if not payment_info:
-        print(f"❌ Payment not found for OrderTrackingId: {order_tracking_id}")
-        print(f"❌ Payment not found for OrderMerchantReference: {order_merchant_reference}")
-        print(f"📋 Available payments: {list(payments_data.keys()) if payments_data else 'None'}")
-        print(f"🔍 Mock Firebase data: {db.data if hasattr(db, 'data') else 'No data attribute'}")
-        # Return 200 to PesaPal even if payment not found (as per documentation)
-        return jsonify({
-            'orderNotificationType': order_notification_type,
-            'orderTrackingId': order_tracking_id,
-            'orderMerchantReference': order_merchant_reference,
-            'status': 200
-        }), 200
-    
-    print(f"✅ Found payment: {payment_id}")
-    
-    user_id = payment_info['user_id']
-    
-    try:
-        # Use PesaPal API to get actual payment status
-        if pesapal is not None:
-            payment_status_response = pesapal.check_payment_status(order_tracking_id)
-            
-            if payment_status_response:
-                print(f"📊 PesaPal API Response: {payment_status_response}")
-                
-                payment_status = payment_status_response.get('status')
-                status_code = payment_status_response.get('status_code')
-                amount = payment_status_response.get('amount')
-                payment_method = payment_status_response.get('payment_method')
-                confirmation_code = payment_status_response.get('confirmation_code')
-                created_date = payment_status_response.get('created_date')
-                payment_account = payment_status_response.get('payment_account')
-                
-                # Update payment with detailed information
-                update_data = {
-                    'status': 'completed' if status_code == 1 else 'failed',
-                    'completed_at': datetime.datetime.now().isoformat(),
-                    'ipn_data': ipn_data,
-                    'pesapal_status': payment_status,
-                    'pesapal_status_code': status_code,
-                    'pesapal_amount': amount,
-                    'payment_method': payment_method,
-                    'confirmation_code': confirmation_code,
-                    'created_date': created_date,
-                    'payment_account': payment_account
-                }
-                
-                db.reference(f'payments/{payment_id}').update(update_data)
-                print(f"✅ Updated payment status to: {update_data['status']}")
-                
-                if status_code == 1:  # COMPLETED
-                    # Add credit to user
-                    user_ref = db.reference(f'registeredUser/{user_id}')
-                    user_data = user_ref.get()
-                    
-                    # Initialize user data if it doesn't exist or doesn't have credit fields
-                    if user_data is None:
-                        user_data = {
-                            'credit_balance': 0,
-                            'total_payments': 0,
-                            'created_at': datetime.datetime.now().isoformat()
-                        }
-                        user_ref.set(user_data)
-                    else:
-                        # Ensure credit fields exist
-                        if 'credit_balance' not in user_data:
-                            user_data['credit_balance'] = 0
-                        if 'total_payments' not in user_data:
-                            user_data['total_payments'] = 0
-                    
-                    current_credit = user_data.get('credit_balance', 0)
-                    new_credit = current_credit + payment_info['credit_days']
-                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-                    
-                    user_ref.update({
-                        'credit_balance': new_credit,
-                        'total_payments': total_payments,
-                        'updated_at': datetime.datetime.now().isoformat(),
-                        'last_payment_date': datetime.datetime.now().isoformat()  # Track last payment to prevent immediate deduction
-                    })
-                    
-                    print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
-                    print(f"   New balance: {new_credit} days")
-                    
-                    # Return success response to PesaPal
-                    return jsonify({
-                        'orderNotificationType': order_notification_type,
-                        'orderTrackingId': order_tracking_id,
-                        'orderMerchantReference': order_merchant_reference,
-                        'status': 200
-                    }), 200
-                else:
-                    print(f"❌ Payment failed with status: {payment_status}")
-                    # Return success response to PesaPal (we received the notification)
-                    return jsonify({
-                        'orderNotificationType': order_notification_type,
-                        'orderTrackingId': order_tracking_id,
-                        'orderMerchantReference': order_merchant_reference,
-                        'status': 200
-                    }), 200
-            else:
-                print("❌ Failed to get payment status from PesaPal API")
-                # Return error response to PesaPal
-                return jsonify({
-                    'orderNotificationType': order_notification_type,
-                    'orderTrackingId': order_tracking_id,
-                    'orderMerchantReference': order_merchant_reference,
-                    'status': 500
-                }), 200
-        else:
-            print("❌ PesaPal integration not available")
-            # Return error response to PesaPal
-            return jsonify({
-                'orderNotificationType': order_notification_type,
-                'orderTrackingId': order_tracking_id,
-                'orderMerchantReference': order_merchant_reference,
-                'status': 500
-            }), 200
-            
-    except Exception as e:
-        print(f"❌ Error processing IPN: {e}")
-        import traceback
-        traceback.print_exc()
-        # Return error response to PesaPal
-        return jsonify({
-            'orderNotificationType': order_notification_type,
-            'orderTrackingId': order_tracking_id,
-            'orderMerchantReference': order_merchant_reference,
-            'status': 500
-        }), 200
-
-@app.route('/api/payment/callback', methods=['GET', 'POST'])
-def payment_callback():
-    """Handle PesaPal payment callback"""
-    print("🔄 Payment Callback Received")
-    print(f"Method: {request.method}")
-    print(f"Query params: {request.args.to_dict()}")
-    print(f"Form data: {request.form.to_dict()}")
-    
-    # Extract callback data
-    order_tracking_id = request.args.get('OrderTrackingId')
-    payment_status = request.args.get('PaymentStatus')
-    
-    print(f"📋 Callback Data:")
-    print(f"   Order Tracking ID: {order_tracking_id}")
-    print(f"   Payment Status: {payment_status}")
-    
-    if order_tracking_id:
-        # Find and update payment
-        payments_ref = db.reference('payments')
-        payments_data = payments_ref.get()
-        
-        if payments_data:
-            for pid, payment in payments_data.items():
-                if payment.get('order_tracking_id') == order_tracking_id:
-                    payment_ref = db.reference(f'payments/{pid}')
-                    payment_ref.update({
-                        'callback_status': payment_status,
-                        'callback_received_at': datetime.datetime.now().isoformat()
-                    })
-                    print(f"✅ Updated payment {pid} with callback status: {payment_status}")
-                    break
-    
-    # Return HTML that automatically closes the WebView and returns to app
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Payment Complete</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                text-align: center;
-                padding: 50px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                margin: 0;
-                min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }}
-            .container {{
-                background: rgba(255, 255, 255, 0.1);
-                padding: 40px;
-                border-radius: 20px;
-                backdrop-filter: blur(10px);
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            }}
-            .success {{
-                font-size: 48px;
-                margin-bottom: 20px;
-                animation: bounce 1s infinite;
-            }}
-            .message {{
-                font-size: 18px;
-                margin-bottom: 15px;
-                opacity: 0.9;
-            }}
-            .subtitle {{
-                font-size: 14px;
-                opacity: 0.7;
-                margin-top: 30px;
-            }}
-            @keyframes bounce {{
-                0%, 20%, 50%, 80%, 100% {{
-                    transform: translateY(0);
-                }}
-                40% {{
-                    transform: translateY(-10px);
-                }}
-                60% {{
-                    transform: translateY(-5px);
-                }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="success">✅</div>
-            <div class="message">Payment Successful!</div>
-            <div class="message">Your credits have been added</div>
-            <div class="subtitle">Returning to app...</div>
-        </div>
-        <script>
-            // Auto-close WebView and return to app after 2 seconds
-            setTimeout(function() {{
-                if (window.AndroidInterface) {{
-                    window.AndroidInterface.onPaymentCompleted('success');
-                }} else {{
-                    // Fallback: try to close the window
-                    window.close();
-                }}
-            }}, 2000);
-        </script>
-    </body>
-    </html>
-    """
-
-@app.route('/api/payment/cancel', methods=['GET', 'POST'])
-def payment_cancel():
-    """Handle PesaPal payment cancellation"""
-    print("❌ Payment Cancellation Received")
-    print(f"Method: {request.method}")
-    print(f"Query params: {request.args.to_dict()}")
-    print(f"Form data: {request.form.to_dict()}")
-    
-    # Extract cancellation data
-    order_tracking_id = request.args.get('OrderTrackingId')
-    
-    print(f"📋 Cancellation Data:")
-    print(f"   Order Tracking ID: {order_tracking_id}")
-    
-    if order_tracking_id:
-        # Find and update payment
-        payments_ref = db.reference('payments')
-        payments_data = payments_ref.get()
-        
-        if payments_data:
-            for pid, payment in payments_data.items():
-                if payment.get('order_tracking_id') == order_tracking_id:
-                    payment_ref = db.reference(f'payments/{pid}')
-                    payment_ref.update({
-                        'status': 'cancelled',
-                        'cancelled_at': datetime.datetime.now().isoformat()
-                    })
-                    print(f"✅ Updated payment {pid} as cancelled")
-                    break
-    
-    # Redirect to frontend
-    frontend_url = Config.FRONTEND_URL
-    redirect_url = f"{frontend_url}/payment/cancelled?orderTrackingId={order_tracking_id}"
-    
-    print(f"🔄 Redirecting to: {redirect_url}")
-    return jsonify({
-        'redirect_url': redirect_url,
-        'message': 'Payment cancelled'
-    })
-
-@app.route('/api/payment/status/<payment_id>', methods=['GET'])
-@require_auth
-def check_payment_status(payment_id):
-    """Check payment status from PesaPal"""
-    user_id = request.user_id
-    
-    # Get payment record
-    payment_ref = db.reference(f'payments/{payment_id}')
-    payment_data = payment_ref.get()
-    if not payment_data:
-        return jsonify({'error': 'Payment not found'}), 404
-    
-    payment_info = payment_data
-    
-    # Verify payment belongs to user
-    if payment_info['user_id'] != user_id:
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    # Check status from PesaPal if payment is pending
-    if payment_info['status'] == 'pending' and payment_info.get('order_tracking_id'):
-        try:
-            pesapal_status = pesapal.check_payment_status(payment_info['order_tracking_id'])
-            if pesapal_status:
-                print(f"📊 PesaPal API Response for {payment_id}: {pesapal_status}")
-                
-                # Update payment status if changed
-                if pesapal_status['status'] == 'COMPLETED' or pesapal_status.get('status_code') == 1:
-                    payment_ref.update({
-                        'status': 'completed',
-                        'completed_at': datetime.datetime.now().isoformat(),
-                        'pesapal_status': pesapal_status.get('status'),
-                        'pesapal_status_code': pesapal_status.get('status_code'),
-                        'payment_method': pesapal_status.get('payment_method'),
-                        'confirmation_code': pesapal_status.get('confirmation_code')
-                    })
-                    
-                    # Add credit to user
-                    user_ref = db.reference(f'registeredUser/{user_id}')
-                    user_data = user_ref.get()
-                    
-                    current_credit = user_data.get('credit_balance', 0)
-                    new_credit = current_credit + payment_info['credit_days']
-                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-                    
-                    user_ref.update({
-                        'credit_balance': new_credit,
-                        'total_payments': total_payments,
-                        'updated_at': datetime.datetime.now().isoformat()
-                    })
-                    
-                    print(f"✅ Added {payment_info['credit_days']} days credit to user {user_id}")
-                    print(f"   New balance: {new_credit} days")
-                    
-                    return jsonify({
-                        'status': 'completed',
-                        'credit_added': payment_info['credit_days'],
-                        'new_balance': new_credit
-                    })
-                elif pesapal_status['status'] == 'FAILED' or pesapal_status.get('status_code') == 2:
-                    payment_ref.update({
-                        'status': 'failed',
-                        'completed_at': datetime.datetime.now().isoformat(),
-                        'pesapal_status': pesapal_status.get('status'),
-                        'pesapal_status_code': pesapal_status.get('status_code')
-                    })
-                    return jsonify({
-                        'status': 'failed',
-                        'message': 'Payment failed'
-                    })
-                else:
-                    # Payment still pending
-                    return jsonify({
-                        'status': 'pending',
-                        'message': 'Payment is still being processed'
-                    })
-            else:
-                print(f"❌ Failed to get PesaPal status for payment {payment_id}")
-                return jsonify({
-                    'status': 'pending',
-                    'message': 'Unable to check payment status from PesaPal'
-                })
-        except Exception as e:
-            print(f"❌ Error checking PesaPal status for payment {payment_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({
-                'status': 'pending',
-                'message': 'Error checking payment status'
-            })
-    
-    return jsonify({
-        'payment_id': payment_id,
-        'status': payment_info['status'],
-        'amount': payment_info['amount'],
-        'credit_days': payment_info['credit_days'],
-        'created_at': payment_info['created_at'].isoformat() if payment_info.get('created_at') else None
-    })
-
-@app.route('/api/usage/record', methods=['POST'])
-@require_auth
-@check_credit_required
-def record_usage():
-    """Record app usage and deduct credit"""
-    user_id = request.user_id
-    usage_data = request.json
-    action_type = usage_data.get('action_type')  # e.g., 'add_debt', 'view_debt', etc.
-    
-    user_ref = db.reference(f'registeredUser/{user_id}')
-    user_data = user_ref.get()
-    
-    current_date = datetime.datetime.now(datetime.timezone.utc)
-    last_usage_date_str = user_data.get('last_usage_date')
-    last_payment_date_str = user_data.get('last_payment_date')
-    
-    # Check if this is a new day of usage
-    should_deduct_credit = False
-    if not last_usage_date_str:
-        should_deduct_credit = True
-    else:
-        # Convert to date for comparison
-        last_usage_date = datetime.datetime.fromisoformat(last_usage_date_str.replace('Z', '+00:00'))
-        last_usage_date_only = last_usage_date.date()
-        current_date_only = current_date.date()
-        if current_date_only > last_usage_date_only:
-            should_deduct_credit = True
-    
-    # Prevent credit deduction if payment was made today
-    if last_payment_date_str:
-        last_payment_date = datetime.datetime.fromisoformat(last_payment_date_str.replace('Z', '+00:00'))
-        last_payment_date_only = last_payment_date.date()
-        if current_date_only == last_payment_date_only:
-            print(f"🔄 Payment made today, skipping credit deduction for user {user_id}")
-            should_deduct_credit = False
-    
-    if should_deduct_credit:
-        # Deduct one day of credit
-        current_credit = user_data.get('credit_balance', 0)
-        new_credit = current_credit - 1
-        
-        user_ref.update({
-            'credit_balance': new_credit,
-            'last_usage_date': current_date.isoformat()
-        })
-        
-        # Record usage
-        usage_id = str(uuid.uuid4())
-        usage_info = {
-            'usage_id': usage_id,
-            'user_id': user_id,
-            'action_type': action_type,
-            'credit_deducted': 1,
-            'remaining_credit': new_credit,
-            'timestamp': current_date.isoformat()
-        }
-        
-        db.reference(f'usage_logs/{usage_id}').set(usage_info)
-    
-    return jsonify({
-        'message': 'Usage recorded',
-        'credit_deducted': 1 if should_deduct_credit else 0,
-        'remaining_credit': user_data.get('credit_balance', 0) - (1 if should_deduct_credit else 0)
-    })
-
-@app.route('/api/payment/complete/<payment_id>', methods=['POST'])
-@require_auth
-def manually_complete_payment(payment_id):
-    """Manually complete a payment for testing purposes"""
-    user_id = request.user_id
-    
-    # Get payment record
-    payment_ref = db.reference(f'payments/{payment_id}')
-    payment_data = payment_ref.get()
-    if not payment_data:
-        return jsonify({'error': 'Payment not found'}), 404
-    
-    payment_info = payment_data
-    
-    # Verify payment belongs to user
-    if payment_info['user_id'] != user_id:
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    # Check if payment is already completed
-    if payment_info['status'] == 'completed':
-        return jsonify({'error': 'Payment already completed'}), 400
-    
-    try:
-        # Mark payment as completed
-        payment_ref.update({
-            'status': 'completed',
-            'completed_at': datetime.datetime.now().isoformat(),
-            'manually_completed': True
-        })
-        
-        # Add credit to user
-        user_ref = db.reference(f'registeredUser/{user_id}')
-        user_data = user_ref.get()
-        
-        current_credit = user_data.get('credit_balance', 0)
-        new_credit = current_credit + payment_info['credit_days']
-        total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-        
-        user_ref.update({
-            'credit_balance': new_credit,
-            'total_payments': total_payments,
-            'updated_at': datetime.datetime.now().isoformat()
-        })
-        
-        print(f"✅ Manually completed payment {payment_id} for user {user_id}")
-        print(f"   Added {payment_info['credit_days']} days credit")
-        print(f"   New balance: {new_credit} days")
-        
-        return jsonify({
-            'status': 'completed',
-            'credit_added': payment_info['credit_days'],
-            'new_balance': new_credit,
-            'message': 'Payment manually completed for testing'
-        })
-        
-    except Exception as e:
-        print(f"❌ Error manually completing payment {payment_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to complete payment'}), 500
-
-@app.route('/api/payment/test-status/<payment_id>', methods=['GET'])
-def test_payment_status(payment_id):
-    """Test endpoint to check payment status without authentication"""
-    try:
-        # Get payment record
-        payment_ref = db.reference(f'payments/{payment_id}')
-        payment_data = payment_ref.get()
-        if not payment_data:
-            return jsonify({'error': 'Payment not found', 'payment_id': payment_id}), 404
-        
-        # Check if we have order_tracking_id to query Pesapal
-        order_tracking_id = payment_data.get('order_tracking_id')
-        if order_tracking_id and pesapal:
-            try:
-                pesapal_status = pesapal.check_payment_status(order_tracking_id)
-                # Return in the format expected by Android app
-                return jsonify({
-                    'status': payment_data.get('status'),  # Use local_status as main status
-                    'payment_id': payment_id,
-                    'local_status': payment_data.get('status'),
-                    'pesapal_status': pesapal_status,
-                    'order_tracking_id': order_tracking_id
-                })
-            except Exception as e:
-                return jsonify({
-                    'status': payment_data.get('status'),  # Use local_status as main status
-                    'payment_id': payment_id,
-                    'local_status': payment_data.get('status'),
-                    'pesapal_error': str(e),
-                    'order_tracking_id': order_tracking_id
-                })
-        else:
-            return jsonify({
-                'status': payment_data.get('status'),  # Use local_status as main status
-                'payment_id': payment_id,
-                'local_status': payment_data.get('status'),
-                'order_tracking_id': order_tracking_id,
-                'message': 'No order_tracking_id or Pesapal not available'
-            })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/payment/debug', methods=['GET'])
-@require_auth
-def debug_payments():
-    """Debug endpoint to check all payments for a user"""
-    user_id = request.user_id
-    
-    try:
-        # Get all payments for the user
-        payments_ref = db.reference('payments')
-        payments_data = payments_ref.get()
-        
-        user_payments = []
-        if payments_data:
-            for pid, payment in payments_data.items():
-                if payment.get('user_id') == user_id:
-                    user_payments.append({
-                        'payment_id': pid,
-                        'status': payment.get('status'),
-                        'amount': payment.get('amount'),
-                        'credit_days': payment.get('credit_days'),
-                        'order_tracking_id': payment.get('order_tracking_id'),
-                        'created_at': payment.get('created_at'),
-                        'completed_at': payment.get('completed_at'),
-                        'pesapal_status': payment.get('pesapal_status'),
-                        'pesapal_status_code': payment.get('pesapal_status_code')
-                    })
-        
-        # Get user credit info
-        user_ref = db.reference(f'registeredUser/{user_id}')
-        user_data = user_ref.get()
-        
-        credit_info = {
-            'credit_balance': user_data.get('credit_balance', 0) if user_data else 0,
-            'is_in_trial': user_data.get('is_in_trial', False) if user_data else False,
-            'trial_days_remaining': user_data.get('trial_days_remaining', 0) if user_data else 0,
-            'total_payments': user_data.get('total_payments', 0) if user_data else 0,
-            'last_usage_date': user_data.get('last_usage_date') if user_data else None
-        }
-        
-        return jsonify({
-            'user_id': user_id,
-            'payments': user_payments,
-            'credit_info': credit_info,
-            'total_payments_count': len(user_payments)
-        })
-        
-    except Exception as e:
-        print(f"❌ Error in debug payments: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to get debug info'}), 500
-
-@app.route('/api/payment/force-ipn/<payment_id>', methods=['POST'])
-@require_auth
-def force_ipn_retry(payment_id):
-    """Force IPN retry for a specific payment"""
-    user_id = request.user_id
-    
-    # Get payment record
-    payment_ref = db.reference(f'payments/{payment_id}')
-    payment_data = payment_ref.get()
-    if not payment_data:
-        return jsonify({'error': 'Payment not found'}), 404
-    
-    payment_info = payment_data
-    
-    # Verify payment belongs to user
-    if payment_info['user_id'] != user_id:
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    # Check if payment has order tracking ID
-    order_tracking_id = payment_info.get('order_tracking_id')
-    if not order_tracking_id:
-        return jsonify({'error': 'Payment has no order tracking ID'}), 400
-    
-    try:
-        # Force check payment status from PesaPal
-        if pesapal is not None:
-            payment_status_response = pesapal.check_payment_status(order_tracking_id)
-            
-            if payment_status_response:
-                print(f"📊 Forced PesaPal API Response for {payment_id}: {payment_status_response}")
-                
-                payment_status = payment_status_response.get('status')
-                status_code = payment_status_response.get('status_code')
-                
-                # Update payment status if changed
-                if payment_status == 'COMPLETED' or status_code == 1:
-                    payment_ref.update({
-                        'status': 'completed',
-                        'completed_at': datetime.datetime.now().isoformat(),
-                        'pesapal_status': payment_status,
-                        'pesapal_status_code': status_code,
-                        'force_checked': True
-                    })
-                    
-                    # Add credit to user
-                    user_ref = db.reference(f'registeredUser/{user_id}')
-                    user_data = user_ref.get()
-                    
-                    current_credit = user_data.get('credit_balance', 0)
-                    new_credit = current_credit + payment_info['credit_days']
-                    total_payments = user_data.get('total_payments', 0) + payment_info['amount']
-                    
-                    user_ref.update({
-                        'credit_balance': new_credit,
-                        'total_payments': total_payments,
-                        'updated_at': datetime.datetime.now().isoformat()
-                    })
-                    
-                    print(f"✅ Force IPN: Added {payment_info['credit_days']} days credit to user {user_id}")
-                    print(f"   New balance: {new_credit} days")
-                    
-                    return jsonify({
-                        'status': 'completed',
-                        'credit_added': payment_info['credit_days'],
-                        'new_balance': new_credit,
-                        'message': 'Payment completed via force IPN retry'
-                    })
-                else:
-                    return jsonify({
-                        'status': 'pending',
-                        'message': f'Payment still pending. PesaPal status: {payment_status}'
-                    })
-            else:
-                return jsonify({
-                    'error': 'Failed to get payment status from PesaPal'
-                }), 500
-        else:
-            return jsonify({
-                'error': 'PesaPal integration not available'
-            }), 500
-            
-    except Exception as e:
-        print(f"❌ Error in force IPN retry for payment {payment_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to force IPN retry'}), 500
-
-# FCM Notification Endpoints
-@app.route('/api/notifications/send', methods=['POST'])
-def send_notification():
-    """Send a manual notification to a user"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        title = data.get('title')
-        body = data.get('body')
-        notification_data = data.get('data', {})
-        
-        if not all([user_id, title, body]):
-            return jsonify({'error': 'user_id, title, and body are required'}), 400
-        
-        if not notification_scheduler:
-            return jsonify({'error': 'FCM service not available'}), 500
-        
-        success = notification_scheduler.send_manual_notification(
-            user_id, title, body, notification_data
-        )
-        
-        if success:
-            return jsonify({'message': 'Notification sent successfully'}), 200
-        else:
-            return jsonify({'error': 'Failed to send notification'}), 500
-            
-    except Exception as e:
-        print(f"Error sending notification: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/register-token', methods=['POST'])
-def register_fcm_token():
-    """Register or update an FCM token for a user"""
-    try:
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-
-        data = request.get_json(force=True) or {}
-        user_id = data.get('user_id')
-        token = data.get('token')
-
-        if not user_id or not token:
-            return jsonify({'error': 'user_id and token are required'}), 400
-
-        # Store token per user (simple single-token model; extend to list if needed)
-        fcm_tokens_ref = db.reference('fcm_tokens')
-        fcm_tokens_ref.child(user_id).set(token)
-
-        return jsonify({'message': 'Token registered'}), 200
-    except Exception as e:
-        print(f"Error registering FCM token: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/trigger-user', methods=['POST'])
-def trigger_user_notifications():
-    """Trigger 5-day debt notifications for a specific user.
-    Optionally accepts an FCM token to (re)register before sending.
-    """
-    try:
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-
-        data = request.get_json(force=True) or {}
-        user_id = data.get('user_id')
-        token = data.get('token')
-
-        if not user_id:
-            return jsonify({'error': 'user_id is required'}), 400
-
-        # Optionally update token first
-        if token:
-            try:
-                fcm_tokens_ref = db.reference('fcm_tokens')
-                fcm_tokens_ref.child(user_id).set(token)
-            except Exception as e:
-                print(f"Warning: failed to store token: {e}")
-
-        # Use SMS reminder service to find due reminders within 5 days
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-
-        sms_service = sms_scheduler.sms_service
-        reminders = sms_service.check_due_reminders(user_id)
-
-        # Ensure FCM service available
-        if fcm_service is None:
-            return jsonify({'error': 'FCM service not available'}), 500
-
-        # Get final token (after possible registration)
-        fcm_tokens_ref = db.reference('fcm_tokens')
-        final_token = fcm_tokens_ref.child(user_id).get()
-        if not final_token:
-            return jsonify({'error': 'No token for user'}), 400
-
-        sent = 0
-        errors = []
-        for r in reminders:
-            try:
-                title = "💰 Debt Due Soon!"
-                body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
-                data_payload = {
-                    "type": "debt_due_reminder",
-                    "debtor_name": r.get('debtor_name','Unknown'),
-                    "debtor_phone": r.get('debtor_phone',''),
-                    "amount": str(r.get('amount','0')),
-                    "due_date": r.get('due_date',''),
-                    "debt_count": str(r.get('debt_count',1)),
-                    "user_id": user_id,
-                    "title": title,
-                    "body": body
-                }
-                ok = fcm_service.send_notification(final_token, title, body, data_payload)
-                if ok:
-                    sent += 1
-                else:
-                    errors.append('send_failed')
-            except Exception as e:
-                errors.append(str(e))
-
-        return jsonify({
-            'message': 'Trigger completed',
-            'user_id': user_id,
-            'reminders_found': len(reminders),
-            'notifications_sent': sent,
-            'errors': errors
-        }), 200
-
-    except Exception as e:
-        print(f"Error triggering user notifications: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/cron/due-5days', methods=['GET', 'POST'])
-def cron_send_due_5days_notifications():
-    """Cron-safe endpoint to iterate all users and send FCM debt-due-in-5-days notifications.
-    Secured by optional CRON_SECRET (query param `key` or header `X-Cron-Auth`).
-    """
-    try:
-        # Optional auth check
-        if CRON_SECRET:
-            provided = request.args.get('key') or request.headers.get('X-Cron-Auth')
-            if provided != CRON_SECRET:
-                return jsonify({'error': 'Unauthorized'}), 401
-
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-        if fcm_service is None:
-            return jsonify({'error': 'FCM service not available'}), 500
-
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'Reminder service not available'}), 500
-        sms_service = sms_scheduler.sms_service
-
-        # Get all users with tokens
-        fcm_tokens_ref = db.reference('fcm_tokens')
-        tokens = fcm_tokens_ref.get() or {}
-
-        total_users = 0
-        total_reminders_found = 0
-        total_notifications_sent = 0
-        user_results = {}
-
-        for user_id, token in tokens.items():
-            total_users += 1
-            try:
-                reminders = sms_service.check_due_reminders(user_id)
-                total_reminders_found += len(reminders)
-                sent = 0
-                for r in reminders:
-                    title = "💰 Debt Due Soon!"
-                    body = r.get('message') or f"Debt for {r.get('debtor_name','Unknown')} due on {r.get('due_date','')}"
-                    data_payload = {
-                        'type': 'debt_due_reminder',
-                        'debtor_name': r.get('debtor_name','Unknown'),
-                        'debtor_phone': r.get('debtor_phone',''),
-                        'amount': str(r.get('amount','0')),
-                        'due_date': r.get('due_date',''),
-                        'debt_count': str(r.get('debt_count',1)),
-                        'user_id': user_id,
-                        'title': title,
-                        'body': body,
-                    }
-                    ok = fcm_service.send_notification(token, title, body, data_payload)
-                    if ok:
-                        sent += 1
-                total_notifications_sent += sent
-                user_results[user_id] = {'reminders': len(reminders), 'sent': sent}
-            except Exception as e:
-                user_results[user_id] = {'error': str(e)}
-
-        return jsonify({
-            'message': 'Cron run complete',
-            'users_processed': total_users,
-            'reminders_found': total_reminders_found,
-            'notifications_sent': total_notifications_sent,
-            'results': user_results,
-        })
-    except Exception as e:
-        print(f"Error in cron due-5days: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/test', methods=['POST'])
-def test_notification():
-    """Send a test notification to a specific user"""
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id', 'GI7PPaaRh7hRogozJcDHt33RQEw2')  # Default to your user ID
-        title = data.get('title', 'Test Notification')
-        body = data.get('body', 'This is a test notification from KileKitabu backend')
-        
-        print(f"🔔 Test notification request for user: {user_id}")
-        print(f"📝 Title: {title}")
-        print(f"📄 Body: {body}")
-        
-        if not notification_scheduler:
-            print("❌ FCM service not available")
-            return jsonify({'error': 'FCM service not available'}), 500
-        
-        print("📤 Attempting to send notification...")
-        success = notification_scheduler.send_manual_notification(
-            user_id, title, body, {"type": "test"}
-        )
-        
-        print(f"📊 Notification result: {success}")
-        
-        if success:
-            print("✅ Test notification sent successfully")
-            return jsonify({'message': 'Test notification sent successfully'}), 200
-        else:
-            print("❌ Failed to send test notification")
-            return jsonify({'error': 'Failed to send test notification'}), 500
-            
-    except Exception as e:
-        print(f"❌ Error sending test notification: {e}")
-        print(f"🔍 Error type: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
-@app.route('/api/notifications/check-due', methods=['POST'])
-def check_due_debts_manual():
-    """Manually trigger due debt check"""
-    try:
-        if not notification_scheduler:
-            return jsonify({'error': 'FCM service not available'}), 500
-        
-        notification_scheduler.check_due_debts()
-        return jsonify({'message': 'Due debt check completed'}), 200
-        
-    except Exception as e:
-        print(f"Error checking due debts: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/check-overdue', methods=['POST'])
-def check_overdue_debts_manual():
-    """Manually trigger overdue debt check"""
-    try:
-        if not notification_scheduler:
-            return jsonify({'error': 'FCM service not available'}), 500
-        
-        notification_scheduler.check_overdue_debts()
-        return jsonify({'message': 'Overdue debt check completed'}), 200
-        
-    except Exception as e:
-        print(f"Error checking overdue debts: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/notifications/tokens', methods=['GET'])
-def get_fcm_tokens():
-    """Get all FCM tokens from database (for testing)"""
-    try:
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-        
-        fcm_tokens_ref = db.reference('fcm_tokens')
-        tokens = fcm_tokens_ref.get()
-        
-        if not tokens:
-            return jsonify({'message': 'No FCM tokens found', 'tokens': {}})
-        
-        return jsonify({
-            'message': f'Found {len(tokens)} FCM tokens',
-            'tokens': tokens
-        })
-        
-    except Exception as e:
-        print(f"Error getting FCM tokens: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-# SMS Reminder Endpoints
-@app.route('/api/sms-reminders/check', methods=['POST'])
-def check_sms_reminders():
-    """Manually trigger SMS reminder check"""
-    try:
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        # Optional query param: days
-        days = request.args.get('days', default=None, type=int)
-        if days is not None and days > 0:
-            result = sms_scheduler.run_manual_check_within(days)
-        else:
-            result = sms_scheduler.run_manual_check()
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error checking SMS reminders: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/sms-reminders/status', methods=['GET'])
-def get_sms_reminder_status():
-    """Get SMS reminder scheduler status"""
-    try:
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        status = sms_scheduler.get_scheduler_status()
-        return jsonify(status)
-        
-    except Exception as e:
-        print(f"Error getting SMS reminder status: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/sms-reminders/stats', methods=['GET'])
-def get_sms_reminder_stats():
-    """Get SMS reminder statistics"""
-    try:
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        days = request.args.get('days', 7, type=int)
-        stats = sms_scheduler.get_reminder_stats(days)
-        return jsonify(stats)
-        
-    except Exception as e:
-        print(f"Error getting SMS reminder stats: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/sms-reminders/start', methods=['POST'])
-def start_sms_reminders():
-    """Start SMS reminder scheduler"""
-    try:
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        sms_scheduler.start_scheduler()
-        return jsonify({'message': 'SMS reminder scheduler started'})
-        
-    except Exception as e:
-        print(f"Error starting SMS reminders: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/sms-reminders/stop', methods=['POST'])
-def stop_sms_reminders():
-    """Stop SMS reminder scheduler"""
-    try:
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        sms_scheduler.stop_scheduler()
-        return jsonify({'message': 'SMS reminder scheduler stopped'})
-        
-    except Exception as e:
-        print(f"Error stopping SMS reminders: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-# Debt Details API
-@app.route('/api/debt/<debt_id>', methods=['GET'])
-def get_debt_details(debt_id):
-    """Get specific debt details by ID"""
-    try:
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-        
-        # Get user ID from query parameter
-        user_id = request.args.get('user_id')
-        if not user_id:
-            return jsonify({'error': 'user_id parameter required'}), 400
-        
-        # Get debt details using SMS service
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        debt_details = sms_scheduler.sms_service._get_debt_details(user_id, debt_id)
-        
-        if not debt_details:
-            return jsonify({'error': 'Debt not found'}), 404
-        
-        return jsonify({
-            'status': 'success',
-            'debt': debt_details
-        })
-        
-    except Exception as e:
-        print(f"Error getting debt details: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-# Manual SMS API
-@app.route('/api/sms/send', methods=['POST'])
-def send_manual_sms():
-    """Send SMS manually"""
-    try:
-        if not db:
-            return jsonify({'error': 'Firebase not available'}), 500
-        
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'JSON data required'}), 400
-        
-        # Required fields
-        phone_number = data.get('phone_number')
-        message = data.get('message')
-        user_id = data.get('user_id')
-        
-        if not all([phone_number, message, user_id]):
-            return jsonify({'error': 'phone_number, message, and user_id are required'}), 400
-        
-        # Get SMS service
-        sms_scheduler = get_sms_scheduler()
-        if not sms_scheduler:
-            return jsonify({'error': 'SMS reminder service not available'}), 500
-        
-        # Send SMS
-        success = sms_scheduler.sms_service._send_sms_via_api(phone_number, message)
-        
-        if success:
-            # Log the manual SMS
-            sms_log = {
-                'user_id': user_id,
-                'phone_number': phone_number,
-                'message': message,
-                'sent_at': datetime.datetime.now().isoformat(),
-                'type': 'manual'
-            }
-            
-            log_id = f"manual_sms_{int(datetime.datetime.now().timestamp())}"
-            db.reference(f'manual_sms_logs/{log_id}').set(sms_log)
-            
-            return jsonify({
-                'status': 'success',
-                'message': 'SMS sent successfully'
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to send SMS'
-            }), 500
-        
-    except Exception as e:
-        print(f"Error sending manual SMS: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=Config.DEBUG, host='0.0.0.0', port=5000)

@@ -1,39 +1,48 @@
-# Python cache and bytecode
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Virtual environments
+*.so
+.Python
 env/
 venv/
 ENV/
-.venv/
-.ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# VS Code and PyCharm
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Test, coverage, and build artifacts
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-dist/
-build/
-*.egg-info/
-
-# Jupyter
-.ipynb_checkpoints/
+# Firebase credentials
+*-firebase-adminsdk-*.json
+firebase-credentials.json
 
 # Logs
 *.log
+logs/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-
-# Firebase and sensitive config
-*.json
-firebase_admin_sdk.json
-pesapal_config.json
