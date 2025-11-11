@@ -35,15 +35,32 @@ try:
         from firebase_admin import db
         print("Firebase already initialized")
     except ValueError:
+        # Option 1: Initialize using credentials file path
         if os.path.exists(Config.FIREBASE_CREDENTIALS_PATH):
             cred = credentials.Certificate(Config.FIREBASE_CREDENTIALS_PATH)
             firebase_admin.initialize_app(cred, {
                 'databaseURL': Config.FIREBASE_DATABASE_URL
             })
             from firebase_admin import db
-            print("Firebase initialized successfully")
+            print("Firebase initialized successfully (file path)")
         else:
-            print(f"Firebase credentials not found: {Config.FIREBASE_CREDENTIALS_PATH}")
+            # Option 2: Initialize using FIREBASE_CREDENTIALS_JSON env var (Render-friendly)
+            creds_json = os.getenv('FIREBASE_CREDENTIALS_JSON')
+            if creds_json:
+                try:
+                    tmp_path = '/tmp/firebase-admin.json'
+                    with open(tmp_path, 'w', encoding='utf-8') as f:
+                        f.write(creds_json)
+                    cred = credentials.Certificate(tmp_path)
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': Config.FIREBASE_DATABASE_URL
+                    })
+                    from firebase_admin import db
+                    print("Firebase initialized successfully (env JSON)")
+                except Exception as init_err:
+                    print(f"Firebase initialization error from env JSON: {init_err}")
+            else:
+                print(f"Firebase credentials not found: {Config.FIREBASE_CREDENTIALS_PATH}")
 except Exception as e:
     print(f"Firebase initialization error: {e}")
 

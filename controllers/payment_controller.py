@@ -220,7 +220,11 @@ class PaymentController:
                 'credit_days': credit_days,
                 'status': 'pending',
                 'provider': 'mpesa',
-                'created_at': datetime.datetime.now().isoformat()
+                'created_at': datetime.datetime.now().isoformat(),
+                'phone_e164': phone,
+                'month_key': month_key,
+                'month_spend_before': month_spend,
+                'monthly_cap_max': max_monthly_total
             }
             self.db.reference(f'payments/{payment_id}').set(payment_info)
             print(f"[mpesa_initiate] payment created id={payment_id} credit_days={credit_days}")
@@ -267,6 +271,9 @@ class PaymentController:
             
             result_code = stk.get('ResultCode')
             print(f"[mpesa_callback] ResultCode: {result_code} (type: {type(result_code)})")
+            result_desc = stk.get('ResultDesc')
+            if result_desc is not None:
+                print(f"[mpesa_callback] ResultDesc: {result_desc}")
             
             metadata_items = ((stk.get('CallbackMetadata') or {}).get('Item')) or []
             print(f"[mpesa_callback] Metadata items count: {len(metadata_items)}")
@@ -417,12 +424,15 @@ class PaymentController:
                 return jsonify({'status': 'ok'})
             else:
                 print(f"[mpesa_callback] ❌ Payment failed (ResultCode: {result_code})")
-                payment_ref.update({
+                failure_update = {
                     'status': 'failed',
                     'provider_data': stk,
                     'completed_at': datetime.datetime.now().isoformat(),
-                })
-                return jsonify({'status': 'failed', 'result_code': result_code})
+                }
+                if result_desc:
+                    failure_update['failure_reason'] = result_desc
+                payment_ref.update(failure_update)
+                return jsonify({'status': 'failed', 'result_code': result_code, 'result_desc': result_desc})
         except Exception as e:
             print(f"[mpesa_callback] ❌ Exception: {type(e).__name__}: {str(e)}")
             import traceback
