@@ -160,6 +160,164 @@ class CyberSourceClient:
         
         return headers
     
+    def create_capture_context(
+        self,
+        target_origins: list,
+        allowed_card_networks: Optional[list] = None,
+        allowed_payment_types: Optional[list] = None,
+        country: str = "KE",
+        locale: str = "en_KE",
+        client_version: Optional[str] = None,
+        amount: Optional[float] = None,
+        currency: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a Unified Checkout capture context for browser/app flows (e.g., Google Pay).
+        """
+        resource = '/up/v1/capture-contexts'
+        payload: Dict[str, Any] = {
+            'targetOrigins': target_origins,
+            'country': country,
+            'locale': locale,
+            'allowedCardNetworks': allowed_card_networks or ['VISA', 'MASTERCARD', 'AMEX'],
+            'allowedPaymentTypes': allowed_payment_types or ['GOOGLEPAY'],
+        }
+        # orderInformation is required at top level (not inside data)
+        if amount is not None and currency:
+            payload['orderInformation'] = {
+                'amountDetails': {
+                    'totalAmount': f"{float(amount):.2f}",
+                    'currency': currency
+                }
+            }
+        else:
+            # Provide defaults if not specified
+            payload['orderInformation'] = {
+                'amountDetails': {
+                    'totalAmount': "1.00",
+                    'currency': 'USD'
+                }
+            }
+        if client_version:
+            payload['clientVersion'] = client_version
+        else:
+            # Provide a reasonable default to satisfy API validation
+            payload['clientVersion'] = '0.31'
+        if extra:
+            payload.update(extra)
+        try:
+            headers = self._get_headers('POST', resource, payload)
+            url = f"{self.api_base}{resource}"
+            print(f"[CyberSourceClient] [CaptureContext] POST {url}")
+            try:
+                # Safe header preview without leaking secrets
+                sig_hdr = headers.get('Signature', '')
+                key_id = ''
+                if sig_hdr:
+                    try:
+                        # keyid="..."
+                        start = sig_hdr.find('keyid="')
+                        if start != -1:
+                            start += len('keyid="')
+                            end = sig_hdr.find('"', start)
+                            key_id = sig_hdr[start:end]
+                    except Exception:
+                        key_id = ''
+                print("[CyberSourceClient] [CaptureContext] Headers preview: "
+                      f"Host={headers.get('Host')}, v-c-date={headers.get('v-c-date')}, "
+                      f"v-c-merchant-id={headers.get('v-c-merchant-id')}, Digest={'set' if headers.get('Digest') else 'missing'}, "
+                      f"keyid={key_id}")
+            except Exception as _:
+                pass
+            try:
+                print(f"[CyberSourceClient] [CaptureContext] Payload: {json.dumps(payload)}")
+            except Exception as _:
+                print("[CyberSourceClient] [CaptureContext] Payload: <unserializable>")
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            print(f"[CyberSourceClient] [CaptureContext] Response status: {response.status_code}")
+            if response.status_code in [200, 201]:
+                # Success: Response is a JWT token string (not JSON)
+                capture_context_token = response.text.strip()
+                print(f"[CyberSourceClient] [CaptureContext] ✅ Success - JWT token length: {len(capture_context_token)}")
+                print(f"[CyberSourceClient] [CaptureContext] Token preview: {capture_context_token[:50]}...")
+                # Return the token in the expected format
+                return {
+                    'ok': True,
+                    'response': {'captureContext': capture_context_token},
+                    'status_code': response.status_code
+                }
+            # Log full response body and headers for diagnostics
+            try:
+                print(f"[CyberSourceClient] [CaptureContext] Response headers: {dict(response.headers)}")
+            except Exception as _:
+                pass
+            try:
+                print(f"[CyberSourceClient] [CaptureContext] Response body: {response.text}")
+            except Exception as _:
+                pass
+            return {
+                'ok': False,
+                'error': (response.json() if response.headers.get('content-type','').startswith('application/json') else {'raw': response.text}),
+                'status_code': response.status_code
+            }
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [CaptureContext] ❌ Request error: {e}")
+            return {'ok': False, 'error': str(e), 'status_code': 500}
+        except Exception as e:
+            print(f"[CyberSourceClient] [CaptureContext] ❌ Unexpected error: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return {'ok': False, 'error': str(e), 'status_code': 500}
+    
+    def create_payment_with_transient_token(
+        self,
+        amount: float,
+        currency: str,
+        transient_token: str,
+        reference_code: str,
+        capture: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Process a payment using a Unified Checkout transient token (e.g., Google Pay).
+        """
+        print(f"[CyberSourceClient] [Payment] Creating payment with transient token")
+        resource = '/pts/v2/payments'
+        payload = {
+            'clientReferenceInformation': {'code': reference_code},
+            'processingInformation': {'capture': capture},
+            'orderInformation': {
+                'amountDetails': {
+                    'totalAmount': str(amount),
+                    'currency': currency,
+                }
+            },
+            'tokenInformation': {
+                'transientToken': transient_token
+            }
+        }
+        try:
+            headers = self._get_headers('POST', resource, payload)
+            url = f"{self.api_base}{resource}"
+            print(f"[CyberSourceClient] [Payment] POST {url}")
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            print(f"[CyberSourceClient] [Payment] Response status: {response.status_code}")
+            if response.status_code in [200, 201]:
+                result = response.json()
+                print(f"[CyberSourceClient] [Payment] ✅ Payment successful (transientToken)")
+                return {'ok': True, 'response': result, 'status_code': response.status_code}
+            error_data = response.json() if response.text else {}
+            print(f"[CyberSourceClient] [Payment] ❌ Payment failed: {error_data}")
+            return {'ok': False, 'error': error_data, 'status_code': response.status_code}
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [Payment] ❌ Request error: {e}")
+            return {'ok': False, 'error': str(e), 'status_code': 500}
+        except Exception as e:
+            print(f"[CyberSourceClient] [Payment] ❌ Unexpected error: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return {'ok': False, 'error': str(e), 'status_code': 500}
+    
     def create_payment(
         self,
         amount: float,
@@ -188,9 +346,12 @@ class CyberSourceClient:
         Returns:
             Payment response from CyberSource
         """
-        print(f"[CyberSourceClient] [Payment] Creating payment")
+        print(f"[CyberSourceClient] [Payment] ========== Creating Card Payment ==========")
         print(f"[CyberSourceClient] [Payment] Amount: {amount} {currency}")
         print(f"[CyberSourceClient] [Payment] Reference: {reference_code}")
+        print(f"[CyberSourceClient] [Payment] Card: ****{card_number[-4:] if len(card_number) >= 4 else 'N/A'}")
+        print(f"[CyberSourceClient] [Payment] Expiry: {expiration_month}/{expiration_year}")
+        print(f"[CyberSourceClient] [Payment] Billing: {billing_info.get('firstName', 'N/A')} {billing_info.get('lastName', 'N/A')}")
         
         resource = '/pts/v2/payments'
         payload = {
@@ -205,7 +366,7 @@ class CyberSourceClient:
                     'number': card_number,
                     'expirationMonth': expiration_month,
                     'expirationYear': expiration_year,
-                    'securityCode': cvv,
+                    # securityCode conditionally added below
                 }
             },
             'orderInformation': {
@@ -216,29 +377,116 @@ class CyberSourceClient:
                 'billTo': billing_info,
             }
         }
+
+        # Conditionally include CVV/securityCode. In CyberSource test defaults, CVV may cause INVALID_DATA.
+        # Use config flag CYBERSOURCE_SEND_CVV to control. Default to False in test environments.
+        try:
+            send_cvv = getattr(Config, 'CYBERSOURCE_SEND_CVV', False)
+        except Exception:
+            send_cvv = False
+        if send_cvv and isinstance(cvv, str) and 3 <= len(cvv.strip()) <= 4 and cvv.strip().isdigit():
+            payload['paymentInformation']['card']['securityCode'] = cvv.strip()
+        
+        # Create a safe payload copy for logging (mask sensitive data)
+        safe_payload = payload.copy()
+        if 'paymentInformation' in safe_payload and 'card' in safe_payload['paymentInformation']:
+            safe_card = safe_payload['paymentInformation']['card'].copy()
+            safe_card['number'] = f"****{card_number[-4:]}" if len(card_number) >= 4 else "****"
+            if 'securityCode' in safe_card:
+                safe_card['securityCode'] = "***"
+            safe_payload['paymentInformation']['card'] = safe_card
         
         try:
+            print(f"[CyberSourceClient] [Payment] 📤 Preparing request...")
             headers = self._get_headers('POST', resource, payload)
             url = f"{self.api_base}{resource}"
             
-            print(f"[CyberSourceClient] [Payment] POST {url}")
+            # Log safe payload
+            try:
+                print(f"[CyberSourceClient] [Payment] 📤 Request payload (safe): {json.dumps(safe_payload, indent=2)}")
+            except Exception:
+                print(f"[CyberSourceClient] [Payment] 📤 Request payload: <unserializable>")
+            
+            # Log headers (safe)
+            try:
+                safe_headers = {k: v for k, v in headers.items() if k not in ['Signature', 'Digest']}
+                safe_headers['Signature'] = f"<{len(headers.get('Signature', ''))} chars>"
+                safe_headers['Digest'] = f"<{len(headers.get('Digest', ''))} chars>" if headers.get('Digest') else None
+                print(f"[CyberSourceClient] [Payment] 📤 Request headers (safe): {json.dumps(safe_headers, indent=2)}")
+            except Exception:
+                print(f"[CyberSourceClient] [Payment] 📤 Request headers: <unserializable>")
+            
+            print(f"[CyberSourceClient] [Payment] 🌐 POST {url}")
+            print(f"[CyberSourceClient] [Payment] ⏳ Sending request to CyberSource...")
+            
             response = requests.post(url, json=payload, headers=headers, timeout=30)
             
-            print(f"[CyberSourceClient] [Payment] Response status: {response.status_code}")
+            print(f"[CyberSourceClient] [Payment] 📥 Response received")
+            print(f"[CyberSourceClient] [Payment]   - Status code: {response.status_code}")
+            print(f"[CyberSourceClient] [Payment]   - Content-Type: {response.headers.get('Content-Type', 'N/A')}")
+            print(f"[CyberSourceClient] [Payment]   - Content-Length: {len(response.content)} bytes")
             
             if response.status_code in [200, 201]:
-                result = response.json()
-                print(f"[CyberSourceClient] [Payment] ✅ Payment successful")
-                print(f"[CyberSourceClient] [Payment]   Transaction ID: {result.get('id')}")
-                print(f"[CyberSourceClient] [Payment]   Status: {result.get('status')}")
-                return {
-                    'ok': True,
-                    'response': result,
-                    'status_code': response.status_code,
-                }
+                try:
+                    result = response.json()
+                    print(f"[CyberSourceClient] [Payment] ✅ Payment successful")
+                    print(f"[CyberSourceClient] [Payment] 📋 Response details:")
+                    print(f"[CyberSourceClient] [Payment]   - Transaction ID: {result.get('id', 'N/A')}")
+                    print(f"[CyberSourceClient] [Payment]   - Status: {result.get('status', 'N/A')}")
+                    print(f"[CyberSourceClient] [Payment]   - Response keys: {list(result.keys())}")
+                    
+                    # Log processor information if available
+                    if 'processorInformation' in result:
+                        proc_info = result['processorInformation']
+                        print(f"[CyberSourceClient] [Payment]   - Processor:")
+                        print(f"[CyberSourceClient] [Payment]     * Response Code: {proc_info.get('responseCode', 'N/A')}")
+                        print(f"[CyberSourceClient] [Payment]     * Approval Code: {proc_info.get('approvalCode', 'N/A')}")
+                        print(f"[CyberSourceClient] [Payment]     * Transaction ID: {proc_info.get('transactionId', 'N/A')}")
+                    
+                    # Log order information if available
+                    if 'orderInformation' in result and 'amountDetails' in result['orderInformation']:
+                        amt_details = result['orderInformation']['amountDetails']
+                        print(f"[CyberSourceClient] [Payment]   - Amount Details:")
+                        print(f"[CyberSourceClient] [Payment]     * Authorized: {amt_details.get('authorizedAmount', 'N/A')} {amt_details.get('currency', 'N/A')}")
+                    
+                    return {
+                        'ok': True,
+                        'response': result,
+                        'status_code': response.status_code,
+                    }
+                except Exception as json_err:
+                    print(f"[CyberSourceClient] [Payment] ⚠️ Failed to parse JSON response: {json_err}")
+                    print(f"[CyberSourceClient] [Payment]   - Raw response: {response.text[:500]}")
+                    return {
+                        'ok': False,
+                        'error': f'Invalid JSON response: {str(json_err)}',
+                        'status_code': response.status_code,
+                    }
             else:
-                error_data = response.json() if response.text else {}
-                print(f"[CyberSourceClient] [Payment] ❌ Payment failed: {error_data}")
+                print(f"[CyberSourceClient] [Payment] ❌ Payment failed (HTTP {response.status_code})")
+                try:
+                    error_data = response.json() if response.text else {}
+                    print(f"[CyberSourceClient] [Payment] 📋 Error response:")
+                    print(f"[CyberSourceClient] [Payment]   - Error type: {type(error_data)}")
+                    if isinstance(error_data, dict):
+                        print(f"[CyberSourceClient] [Payment]   - Error keys: {list(error_data.keys())}")
+                        print(f"[CyberSourceClient] [Payment]   - Message: {error_data.get('message', 'N/A')}")
+                        print(f"[CyberSourceClient] [Payment]   - Reason: {error_data.get('reason', 'N/A')}")
+                        if 'details' in error_data:
+                            print(f"[CyberSourceClient] [Payment]   - Details: {error_data['details']}")
+                    else:
+                        print(f"[CyberSourceClient] [Payment]   - Error: {error_data}")
+                    
+                    # Log full error response for debugging
+                    try:
+                        print(f"[CyberSourceClient] [Payment] 📋 Full error response: {json.dumps(error_data, indent=2)}")
+                    except Exception:
+                        print(f"[CyberSourceClient] [Payment] 📋 Full error response: {error_data}")
+                except Exception as parse_err:
+                    error_data = {'raw': response.text[:500]}
+                    print(f"[CyberSourceClient] [Payment] ⚠️ Failed to parse error response: {parse_err}")
+                    print(f"[CyberSourceClient] [Payment]   - Raw response: {response.text[:500]}")
+                
                 return {
                     'ok': False,
                     'error': error_data,
@@ -246,7 +494,17 @@ class CyberSourceClient:
                 }
                 
         except requests.exceptions.RequestException as e:
-            print(f"[CyberSourceClient] [Payment] ❌ Request error: {e}")
+            print(f"[CyberSourceClient] [Payment] ❌ Request exception occurred")
+            print(f"[CyberSourceClient] [Payment]   - Exception type: {type(e).__name__}")
+            print(f"[CyberSourceClient] [Payment]   - Error message: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[CyberSourceClient] [Payment]   - Response status: {e.response.status_code}")
+                try:
+                    print(f"[CyberSourceClient] [Payment]   - Response body: {e.response.text[:500]}")
+                except Exception:
+                    pass
+            import traceback
+            print(f"[CyberSourceClient] [Payment] Traceback: {traceback.format_exc()}")
             return {
                 'ok': False,
                 'error': str(e),
@@ -254,8 +512,109 @@ class CyberSourceClient:
             }
         except Exception as e:
             print(f"[CyberSourceClient] [Payment] ❌ Unexpected error: {e}")
+            print(f"[CyberSourceClient] [Payment]   - Exception type: {type(e).__name__}")
             import traceback
-            print(f"[CyberSourceClient] [Payment] Traceback: {traceback.format_exc()}")
+            print(f"[CyberSourceClient] [Payment] Full traceback: {traceback.format_exc()}")
+            return {
+                'ok': False,
+                'error': str(e),
+                'status_code': 500,
+            }
+    
+    def check_payment_status(
+        self,
+        transaction_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Check and refresh payment status using CyberSource refresh-payment-status endpoint.
+        
+        Args:
+            transaction_id: CyberSource transaction ID (from payment response)
+            
+        Returns:
+            Payment status response from CyberSource
+        """
+        print(f"[CyberSourceClient] [PaymentStatus] ========== Checking Payment Status ==========")
+        print(f"[CyberSourceClient] [PaymentStatus] Transaction ID: {transaction_id}")
+        
+        resource = f'/pts/v2/refresh-payment-status/{transaction_id}'
+        
+        try:
+            headers = self._get_headers('POST', resource)
+            url = f"{self.api_base}{resource}"
+            
+            print(f"[CyberSourceClient] [PaymentStatus] 🌐 POST {url}")
+            print(f"[CyberSourceClient] [PaymentStatus] ⏳ Sending request to CyberSource...")
+            
+            response = requests.post(url, headers=headers, timeout=30)
+            
+            print(f"[CyberSourceClient] [PaymentStatus] 📥 Response received")
+            print(f"[CyberSourceClient] [PaymentStatus]   - Status code: {response.status_code}")
+            print(f"[CyberSourceClient] [PaymentStatus]   - Content-Type: {response.headers.get('Content-Type', 'N/A')}")
+            
+            if response.status_code in [200, 201]:
+                try:
+                    result = response.json()
+                    status = result.get('status', 'UNKNOWN')
+                    print(f"[CyberSourceClient] [PaymentStatus] ✅ Status check successful")
+                    print(f"[CyberSourceClient] [PaymentStatus] 📋 Response details:")
+                    print(f"[CyberSourceClient] [PaymentStatus]   - Transaction ID: {result.get('id', 'N/A')}")
+                    print(f"[CyberSourceClient] [PaymentStatus]   - Status: {status}")
+                    print(f"[CyberSourceClient] [PaymentStatus]   - Response keys: {list(result.keys())}")
+                    
+                    # Log processor information if available
+                    if 'processorInformation' in result:
+                        proc_info = result['processorInformation']
+                        print(f"[CyberSourceClient] [PaymentStatus]   - Processor:")
+                        print(f"[CyberSourceClient] [PaymentStatus]     * Response Code: {proc_info.get('responseCode', 'N/A')}")
+                        print(f"[CyberSourceClient] [PaymentStatus]     * Approval Code: {proc_info.get('approvalCode', 'N/A')}")
+                    
+                    return {
+                        'ok': True,
+                        'response': result,
+                        'status_code': response.status_code,
+                    }
+                except Exception as json_err:
+                    print(f"[CyberSourceClient] [PaymentStatus] ⚠️ Failed to parse JSON response: {json_err}")
+                    print(f"[CyberSourceClient] [PaymentStatus]   - Raw response: {response.text[:500]}")
+                    return {
+                        'ok': False,
+                        'error': f'Invalid JSON response: {str(json_err)}',
+                        'status_code': response.status_code,
+                    }
+            else:
+                print(f"[CyberSourceClient] [PaymentStatus] ❌ Status check failed (HTTP {response.status_code})")
+                try:
+                    error_data = response.json() if response.text else {}
+                    print(f"[CyberSourceClient] [PaymentStatus] 📋 Error response:")
+                    print(f"[CyberSourceClient] [PaymentStatus]   - Error: {error_data}")
+                    return {
+                        'ok': False,
+                        'error': error_data,
+                        'status_code': response.status_code,
+                    }
+                except Exception:
+                    return {
+                        'ok': False,
+                        'error': {'raw': response.text[:500]},
+                        'status_code': response.status_code,
+                    }
+                
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [PaymentStatus] ❌ Request exception occurred")
+            print(f"[CyberSourceClient] [PaymentStatus]   - Exception type: {type(e).__name__}")
+            print(f"[CyberSourceClient] [PaymentStatus]   - Error message: {str(e)}")
+            import traceback
+            print(f"[CyberSourceClient] [PaymentStatus] Traceback: {traceback.format_exc()}")
+            return {
+                'ok': False,
+                'error': str(e),
+                'status_code': 500,
+            }
+        except Exception as e:
+            print(f"[CyberSourceClient] [PaymentStatus] ❌ Unexpected error: {e}")
+            import traceback
+            print(f"[CyberSourceClient] [PaymentStatus] Full traceback: {traceback.format_exc()}")
             return {
                 'ok': False,
                 'error': str(e),

@@ -29,6 +29,12 @@ class Config:
     ALLOW_UNAUTH_TEST = os.getenv('ALLOW_UNAUTH_TEST', 'False').lower() == 'true'
     FORCE_TRIAL_END = os.getenv('FORCE_TRIAL_END', 'False').lower() == 'true'
     
+    # Google Pay (structure)
+    GOOGLE_PAY_ENABLED = os.getenv('GOOGLE_PAY_ENABLED', 'True').lower() == 'true'
+    GOOGLE_PAY_MIN_AMOUNT = float(os.getenv('GOOGLE_PAY_MIN_AMOUNT', '1.0'))
+    GOOGLE_PAY_PROCESSOR = os.getenv('GOOGLE_PAY_PROCESSOR', '')  # e.g., 'cybersource', 'stripe'
+    GOOGLE_PAY_CURRENCY = os.getenv('GOOGLE_PAY_CURRENCY', 'USD')
+    
     # User Reset Configuration
     # Automatic reset behavior:
     # - Users without registration_date will automatically get a fresh 14-day trial on login

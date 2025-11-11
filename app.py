@@ -20,6 +20,7 @@ from routes.config_info import bp as config_info_bp
 from routes.subscription import bp as subscription_bp
 from routes.cybersource import cybersource_bp
 from routes.cron import bp as cron_bp
+from routes.googlepay import bp as googlepay_bp
 
 # Initialize logging
 init_logging()
@@ -241,6 +242,7 @@ app.register_blueprint(subscription_bp)
 app.register_blueprint(config_info_bp)
 app.register_blueprint(cybersource_bp)
 app.register_blueprint(cron_bp)
+app.register_blueprint(googlepay_bp)
 
 # Health check endpoint
 @app.route('/', methods=['GET'])

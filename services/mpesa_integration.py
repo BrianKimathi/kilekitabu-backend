@@ -108,44 +108,53 @@ class MpesaClient:
         print(f"[MpesaClient] [STK Push] ✅ Timestamp: {timestamp}")
         
         print(f"[MpesaClient] [STK Push] Step 3: Processing phone number...")
-        # Convert phone to integer (remove + and any non-digits)
+        # Convert phone to E.164 digits only (remove + and any non-digits)
         phone_clean = phone_e164.replace("+", "").replace("-", "").replace(" ", "")
         print(f"[MpesaClient] [STK Push]   Phone (cleaned): {phone_clean}")
-        phone_int = int(phone_clean)
-        print(f"[MpesaClient] [STK Push] ✅ Phone (integer): {phone_int}")
+        # Keep as string for exact API payload formatting
+        phone_str = phone_clean
+        print(f"[MpesaClient] [STK Push] ✅ Phone (string): {phone_str}")
         
         print(f"[MpesaClient] [STK Push] Step 4: Generating password...")
         password = self._password(timestamp)
         print(f"[MpesaClient] [STK Push] ✅ Password generated")
         
         print(f"[MpesaClient] [STK Push] Step 5: Constructing payload...")
-        # Use configured shortcode
-        short_code_int = int(self.short_code)
+        # Use configured shortcode (string for exact API payload formatting)
+        short_code_str = str(self.short_code)
+
+        # Amount as whole number string (Daraja expects string)
+        amount_str = str(int(round(amount)))
+
         payload = {
-            "BusinessShortCode": short_code_int,
+            "BusinessShortCode": short_code_str,
             "Password": password,
             "Timestamp": timestamp,
             "TransactionType": "CustomerPayBillOnline",
-            "Amount": int(amount),
-            "PartyA": phone_int,
-            "PartyB": short_code_int,
-            "PhoneNumber": phone_int,
+            "Amount": amount_str,
+            "PartyA": phone_str,
+            "PartyB": short_code_str,
+            "PhoneNumber": phone_str,
             "CallBackURL": self.callback_url,
             "AccountReference": account_ref[:12] if len(account_ref) > 12 else account_ref,
             "TransactionDesc": description[:20] if len(description) > 20 else description,
         }
         print(f"[MpesaClient] [STK Push] ✅ Payload constructed:")
-        print(f"[MpesaClient] [STK Push]   BusinessShortCode: {payload['BusinessShortCode']}")
-        print(f"[MpesaClient] [STK Push]   Password: {payload['Password'][:30]}...")
-        print(f"[MpesaClient] [STK Push]   Timestamp: {payload['Timestamp']}")
-        print(f"[MpesaClient] [STK Push]   TransactionType: {payload['TransactionType']}")
-        print(f"[MpesaClient] [STK Push]   Amount: {payload['Amount']}")
-        print(f"[MpesaClient] [STK Push]   PartyA: {payload['PartyA']}")
-        print(f"[MpesaClient] [STK Push]   PartyB: {payload['PartyB']}")
-        print(f"[MpesaClient] [STK Push]   PhoneNumber: {payload['PhoneNumber']}")
-        print(f"[MpesaClient] [STK Push]   CallBackURL: {payload['CallBackURL']}")
-        print(f"[MpesaClient] [STK Push]   AccountReference: {payload['AccountReference']}")
-        print(f"[MpesaClient] [STK Push]   TransactionDesc: {payload['TransactionDesc']}")
+        try:
+            import json as _json
+            print(f"[MpesaClient] [STK Push]   Full JSON payload: {_json.dumps(payload, ensure_ascii=False)}")
+        except Exception:
+            print(f"[MpesaClient] [STK Push]   BusinessShortCode: {payload['BusinessShortCode']}")
+            print(f"[MpesaClient] [STK Push]   Password: {payload['Password'][:30]}...")
+            print(f"[MpesaClient] [STK Push]   Timestamp: {payload['Timestamp']}")
+            print(f"[MpesaClient] [STK Push]   TransactionType: {payload['TransactionType']}")
+            print(f"[MpesaClient] [STK Push]   Amount: {payload['Amount']}")
+            print(f"[MpesaClient] [STK Push]   PartyA: {payload['PartyA']}")
+            print(f"[MpesaClient] [STK Push]   PartyB: {payload['PartyB']}")
+            print(f"[MpesaClient] [STK Push]   PhoneNumber: {payload['PhoneNumber']}")
+            print(f"[MpesaClient] [STK Push]   CallBackURL: {payload['CallBackURL']}")
+            print(f"[MpesaClient] [STK Push]   AccountReference: {payload['AccountReference']}")
+            print(f"[MpesaClient] [STK Push]   TransactionDesc: {payload['TransactionDesc']}")
         
         print(f"[MpesaClient] [STK Push] Step 6: Sending STK Push request...")
         request_url = f"{self.base}/mpesa/stkpush/v1/processrequest"
