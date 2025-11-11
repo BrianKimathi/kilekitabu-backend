@@ -29,10 +29,19 @@ class Config:
     ALLOW_UNAUTH_TEST = os.getenv('ALLOW_UNAUTH_TEST', 'False').lower() == 'true'
     FORCE_TRIAL_END = os.getenv('FORCE_TRIAL_END', 'False').lower() == 'true'
     
+    # User Reset Configuration
+    # Automatic reset behavior:
+    # - Users without registration_date will automatically get a fresh 14-day trial on login
+    # - If RESET_USERS_ON_LOGIN=True, ALL users (including those with registration_date) will get reset on login
+    # - This ensures all users (existing and new) get a fresh trial period
+    TRIAL_RESET_DATE = os.getenv('TRIAL_RESET_DATE', '')  # e.g., '2024-01-15' or empty to disable (legacy)
+    RESET_USERS_ON_LOGIN = os.getenv('RESET_USERS_ON_LOGIN', 'True').lower() == 'true'  # Enable automatic reset on login (default: True)
+    
     # Subscription Configuration
     DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
     FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '14'))  # Free trial period in days
     MONTHLY_CAP_KES = float(os.getenv('MONTHLY_CAP_KES', '150'))  # Monthly cap in KES
+    MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '12'))  # Allow paying up to N months in advance
     
     # M-Pesa Daraja Configuration
     MPESA_ENV = os.getenv('MPESA_ENV', 'sandbox')  # sandbox | production

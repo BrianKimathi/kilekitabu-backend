@@ -112,7 +112,7 @@ try:
             env=Config.MPESA_ENV,
         )
         print("✅ M-Pesa client initialized successfully")
-    else:
+            else:
         missing = []
         if not Config.MPESA_CONSUMER_KEY:
             missing.append("MPESA_CONSUMER_KEY")
@@ -123,9 +123,9 @@ try:
         if not Config.MPESA_PASSKEY:
             missing.append("MPESA_PASSKEY")
         print(f"❌ M-Pesa not configured; missing: {', '.join(missing)}")
-except Exception as e:
+    except Exception as e:
     print(f"❌ M-Pesa initialization error: {e}")
-    import traceback
+        import traceback
     print(f"Traceback: {traceback.format_exc()}")
 
 # Initialize CyberSource Client
@@ -159,9 +159,9 @@ try:
         if not Config.CYBERSOURCE_SECRET_KEY:
             missing.append("CYBERSOURCE_SECRET_KEY")
         print(f"❌ CyberSource not configured; missing: {', '.join(missing)}")
-except Exception as e:
+    except Exception as e:
     print(f"❌ CyberSource initialization error: {e}")
-    import traceback
+        import traceback
     print(f"Traceback: {traceback.format_exc()}")
 
 # Initialize FCM Service and Schedulers
@@ -203,9 +203,9 @@ if db is not None:
             keep_alive_scheduler = KeepAliveScheduler(base_url)
             keep_alive_scheduler.start_scheduler()
             print(f"Keep-alive scheduler initialized (pings every 7 minutes: {base_url}/api/health/keep-alive)")
-        else:
+                else:
             print("⚠️ BASE_URL not set - keep-alive scheduler not started")
-    except Exception as e:
+            except Exception as e:
         print(f"FCM initialization error: {e}")
 
 # Configure app with services

@@ -94,16 +94,17 @@ class SubscriptionController:
         user_data = user_ref.get()
         print(f"[get_credit_info] User data: {user_data}")
         
+        current_time = datetime.datetime.now(datetime.timezone.utc)
+        
         if not user_data:
-            # Auto-register user if they don't exist
+            # Auto-register new user with fresh trial
             try:
                 user_info = auth.get_user(user_id)
-                current_time = datetime.datetime.now(datetime.timezone.utc)
                 
                 user_data = {
                     'user_id': user_id,
                     'email': user_info.email,
-                    'registration_date': current_time.isoformat(),
+                    'registration_date': current_time.isoformat(),  # Start fresh trial
                     'credit_balance': 0,
                     'total_payments': 0,
                     'created_at': current_time.isoformat(),
@@ -111,8 +112,60 @@ class SubscriptionController:
                 }
                 
                 user_ref.set(user_data)
+                print(f"[get_credit_info] New user {user_id} registered with fresh trial starting {current_time.isoformat()}")
             except Exception as e:
                 return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
+        
+        # Check if user needs a fresh trial reset
+        # Strategy: Reset ALL users (existing and new) to get fresh 14-day trial
+        registration_date_str = user_data.get('registration_date')
+        should_reset = False
+        
+        # Always reset if user doesn't have registration_date (old users from export)
+        if not registration_date_str:
+            should_reset = True
+            print(f"[get_credit_info] User {user_id} missing registration_date - resetting for fresh trial")
+        
+        # Also reset if RESET_USERS_ON_LOGIN is enabled (for all existing users)
+        elif getattr(self.config, 'RESET_USERS_ON_LOGIN', False):
+            # Check if user has already been reset in this reset cycle
+            trial_reset_date_str = user_data.get('trial_reset_date')
+            if not trial_reset_date_str:
+                # User hasn't been reset yet in this cycle, reset them now
+                should_reset = True
+                print(f"[get_credit_info] User {user_id} needs reset (RESET_USERS_ON_LOGIN enabled)")
+            else:
+                # Check if reset was before the current reset date threshold
+                try:
+                    reset_date = datetime.datetime.fromisoformat(trial_reset_date_str.replace('Z', '+00:00'))
+                    # If reset was more than 14 days ago, allow another reset
+                    days_since_reset = (current_time - reset_date).days
+                    if days_since_reset >= self.config.FREE_TRIAL_DAYS:
+                        should_reset = True
+                        print(f"[get_credit_info] User {user_id} trial expired ({days_since_reset} days ago) - resetting")
+                except Exception as e:
+                    print(f"[get_credit_info] Error parsing trial_reset_date: {e}")
+                    should_reset = True  # Reset if we can't parse the date
+        
+        # Reset user for fresh trial if needed
+        if should_reset:
+            print(f"[get_credit_info] 🔄 Resetting user {user_id} for fresh 14-day trial")
+            reset_time = datetime.datetime.now(datetime.timezone.utc)
+            
+            # Reset trial-related fields but keep payment history and user info
+            update_data = {
+                'registration_date': reset_time.isoformat(),  # New registration date = now (starts fresh trial)
+                'trial_reset_date': reset_time.isoformat(),  # Track when reset happened
+                'credit_balance': 0,  # Reset credit balance to 0
+                'last_usage_date': None,  # Reset usage tracking
+                'updated_at': reset_time.isoformat(),
+                # Keep payment history (total_payments, monthly_paid) for accounting
+                # Keep user info (name, email, phone, profileImageUri, etc.)
+            }
+            
+            user_ref.update(update_data)
+            user_data.update(update_data)
+            print(f"[get_credit_info] ✅ User {user_id} reset successfully. Fresh trial starts: {reset_time.isoformat()}")
         
         registration_date_str = user_data.get('registration_date')
         
@@ -130,12 +183,19 @@ class SubscriptionController:
             trial_days_remaining = 0
         
         credit_balance = user_data.get('credit_balance', 0)
+        max_prepay_months = getattr(self.config, 'MAX_PREPAY_MONTHS', 1)
         response_data = {
             'credit_balance': credit_balance,
             'is_in_trial': is_in_trial,
             'trial_days_remaining': trial_days_remaining,
             'last_usage_date': user_data.get('last_usage_date'),
-            'total_payments': user_data.get('total_payments', 0)
+            'total_payments': user_data.get('total_payments', 0),
+            'billing_config': {
+                'daily_rate_kes': self.config.DAILY_RATE,
+                'monthly_cap_kes': self.config.MONTHLY_CAP_KES,
+                'max_prepay_months': max_prepay_months,
+                'max_top_up_kes': self.config.MONTHLY_CAP_KES * max_prepay_months
+            }
         }
         print(f"[get_credit_info] Response: credit_balance={credit_balance}, is_in_trial={is_in_trial}, trial_days_remaining={trial_days_remaining}")
         return jsonify(response_data)

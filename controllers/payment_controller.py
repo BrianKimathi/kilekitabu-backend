@@ -188,20 +188,24 @@ class PaymentController:
             user_data = user_ref.get() or {}
             monthly = user_data.get('monthly_paid', {})
             month_spend = float(monthly.get(month_key, 0))
-            remaining_cap = max(0.0, self.config.MONTHLY_CAP_KES - month_spend)
-            print(f"[mpesa_initiate] month_spend={month_spend} remaining_cap={remaining_cap}")
+            max_monthly_total = self.config.MONTHLY_CAP_KES * getattr(self.config, 'MAX_PREPAY_MONTHS', 1)
+            remaining_cap = max(0.0, max_monthly_total - month_spend)
+            print(f"[mpesa_initiate] month_spend={month_spend} remaining_cap={remaining_cap} max_monthly_total={max_monthly_total}")
         
             if remaining_cap <= 0:
                 return jsonify({
                     'error': 'Monthly cap reached',
-                    'cap': self.config.MONTHLY_CAP_KES,
+                    'cap': max_monthly_total,
                     'month': month_key
                 }), 400
         
             if amount > remaining_cap:
                 print(f"[mpesa_initiate] ❌ Amount {amount} exceeds remaining cap {remaining_cap}")
                 return jsonify({
-                    'error': f'Amount exceeds remaining monthly cap. Maximum payment: KES {int(remaining_cap)}',
+                    'error': (
+                        f'Amount exceeds remaining allowance. You can pay up to '
+                        f'KES {int(remaining_cap)} right now (max {int(max_monthly_total)} per month).'
+                    ),
                     'remaining': remaining_cap,
                     'requested': amount
                 }), 400

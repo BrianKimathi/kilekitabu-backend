@@ -150,6 +150,35 @@ def initiate_card_payment():
         print(f"[cybersource_initiate] ❌ Invalid request data: {e}")
         return jsonify({'error': 'Invalid request data'}), 400
     
+    # Fetch user record for monthly spend calculations
+    user_ref = db.reference(f'registeredUser/{user_id}')
+    user_data = user_ref.get() or {}
+    
+    now = datetime.datetime.now(datetime.timezone.utc)
+    month_key = now.strftime('%Y-%m')
+    monthly_paid = user_data.get('monthly_paid', {}) or {}
+    month_spend = float(monthly_paid.get(month_key, 0))
+    max_monthly_total = Config.MONTHLY_CAP_KES * getattr(Config, 'MAX_PREPAY_MONTHS', 1)
+    remaining_cap = max(0.0, max_monthly_total - month_spend)
+    print(f"[cybersource_initiate] month_spend={month_spend} remaining_cap={remaining_cap} max_monthly_total={max_monthly_total}")
+    
+    if remaining_cap <= 0:
+        return jsonify({
+            'error': 'Monthly cap reached',
+            'cap': max_monthly_total,
+            'month': month_key
+        }), 400
+    
+    if amount > remaining_cap:
+        return jsonify({
+            'error': (
+                f'Amount exceeds remaining allowance. You can pay up to '
+                f'KES {int(remaining_cap)} right now (max {int(max_monthly_total)} per month).'
+            ),
+            'remaining': remaining_cap,
+            'requested': amount
+        }), 400
+    
     # Generate unique reference
     payment_id = f"CS_{user_id[:8]}_{uuid.uuid4().hex[:12]}"
     print(f"[cybersource_initiate] Payment ID: {payment_id}")
@@ -212,19 +241,42 @@ def initiate_card_payment():
                 
                 # Add credits to user account
                 if status == 'AUTHORIZED':
-                    user_ref = db.reference(f'registeredUser/{user_id}')
-                    user_data = user_ref.get() or {}
-                    current_credit = float(user_data.get('credit_balance', 0))
-                    new_credit = current_credit + amount
+                    # Re-fetch latest user data for accuracy
+                    latest_user_data = user_ref.get() or {}
+                    
+                    current_credit_raw = latest_user_data.get('credit_balance', 0)
+                    if isinstance(current_credit_raw, float):
+                        current_credit = int(current_credit_raw)
+                    elif isinstance(current_credit_raw, int):
+                        current_credit = current_credit_raw
+                    else:
+                        try:
+                            current_credit = int(float(current_credit_raw))
+                        except (ValueError, TypeError):
+                            current_credit = 0
+                    
+                    daily_rate = Config.DAILY_RATE if Config.DAILY_RATE else 1
+                    credit_days = max(1, int(amount / daily_rate))
+                    new_credit = current_credit + credit_days
+                    
+                    updated_monthly = latest_user_data.get('monthly_paid', {}) or {}
+                    latest_month_spend = float(updated_monthly.get(month_key, 0))
+                    latest_month_spend += amount
+                    updated_monthly[month_key] = latest_month_spend
                     
                     user_ref.update({
-                        'credit_balance': new_credit,
-                        'total_payments': float(user_data.get('total_payments', 0)) + amount,
+                        'credit_balance': int(new_credit),
+                        'total_payments': float(latest_user_data.get('total_payments', 0)) + amount,
+                        'monthly_paid': updated_monthly,
                         'last_payment_date': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                         'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     })
                     
-                    print(f"[cybersource_initiate] ✅ Added {amount} credits. New balance: {new_credit}")
+                    payments_ref.child(payment_id).update({
+                        'credit_days': credit_days
+                    })
+                    
+                    print(f"[cybersource_initiate] ✅ Added {credit_days} credit days. New balance: {new_credit}")
                 
             except Exception as e:
                 print(f"[cybersource_initiate] ⚠️ Failed to update records: {e}")
