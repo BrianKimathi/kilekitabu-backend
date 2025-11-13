@@ -77,25 +77,24 @@ class CyberSourceClient:
             Base64 encoded signature
         """
         # Signature data format for HTTP signature (CyberSource format)
-        # Note: Validation string uses "date:" but HTTP header uses "v-c-date:"
-        # Note: Validation string uses "request-target:" not "(request-target):"
+        # Validation string must match the actual HTTP header names being sent
         if method in ['POST', 'PATCH', 'PUT']:
             signature_string = (
                 f"host: {self.api_base.split('//')[1]}\n"
-                f"date: {timestamp}\n"
-                f"request-target: {method.lower()} {resource}\n"
+                f"v-c-date: {timestamp}\n"
+                f"(request-target): {method.lower()} {resource}\n"
                 f"digest: SHA-256={digest}\n"
                 f"v-c-merchant-id: {self.merchant_id}"
             )
-            headers_list = "host date request-target digest v-c-merchant-id"
+            headers_list = "host v-c-date (request-target) digest v-c-merchant-id"
         else:
             signature_string = (
                 f"host: {self.api_base.split('//')[1]}\n"
-                f"date: {timestamp}\n"
-                f"request-target: {method.lower()} {resource}\n"
+                f"v-c-date: {timestamp}\n"
+                f"(request-target): {method.lower()} {resource}\n"
                 f"v-c-merchant-id: {self.merchant_id}"
             )
-            headers_list = "host date request-target v-c-merchant-id"
+            headers_list = "host v-c-date (request-target) v-c-merchant-id"
         
         # Sign with HMAC-SHA256
         # Ensure secret key is properly padded for base64 decoding
