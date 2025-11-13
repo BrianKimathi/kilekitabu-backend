@@ -20,7 +20,7 @@ class Config:
     
     # Application Configuration
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
-    BASE_URL = os.getenv('BASE_URL', 'https://a48a7d70de00.ngrok-free.app')
+    BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
     CRON_SECRET_KEY = os.getenv('CRON_SECRET_KEY', SECRET_KEY)  # Defaults to SECRET_KEY if not set
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
