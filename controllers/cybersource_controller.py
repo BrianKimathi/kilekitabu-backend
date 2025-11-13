@@ -142,9 +142,19 @@ def initiate_card_payment():
                 'error': f"Amount must not exceed {max_amount}"
             }), 400
         
+        # Clean and validate card number (remove spaces, dashes, etc.)
+        card_number_raw = card.get('number', '')
+        if card_number_raw:
+            # Remove all non-digit characters (spaces, dashes, etc.)
+            card_number_clean = ''.join(filter(str.isdigit, str(card_number_raw)))
+            print(f"[cybersource_initiate]   - Card number (raw): {card_number_raw[:4]}...{card_number_raw[-4:] if len(card_number_raw) >= 4 else ''}")
+            print(f"[cybersource_initiate]   - Card number (cleaned): {card_number_clean[:4]}...{card_number_clean[-4:] if len(card_number_clean) >= 4 else ''} (length: {len(card_number_clean)})")
+        else:
+            card_number_clean = ''
+        
         # Validate card fields
         card_fields = {
-            'number': card.get('number'),
+            'number': card_number_clean,
             'expirationMonth': card.get('expirationMonth'),
             'expirationYear': card.get('expirationYear'),
             'cvv': card.get('cvv'),
@@ -155,6 +165,11 @@ def initiate_card_payment():
         if missing_card_fields:
             print(f"[cybersource_initiate] ❌ Missing card fields: {missing_card_fields}")
             return jsonify({'error': 'Missing required card fields'}), 400
+        
+        # Validate card number length (should be 13-19 digits)
+        if len(card_number_clean) < 13 or len(card_number_clean) > 19:
+            print(f"[cybersource_initiate] ❌ Invalid card number length: {len(card_number_clean)}")
+            return jsonify({'error': 'Invalid card number format'}), 400
         
         # Validate billing info
         required_billing_fields = [
@@ -255,14 +270,14 @@ def initiate_card_payment():
     print(f"[cybersource_initiate] 🚀 Initiating CyberSource payment...")
     print(f"[cybersource_initiate]   - Reference code: {payment_id}")
     print(f"[cybersource_initiate]   - Amount: {amount} {currency}")
-    print(f"[cybersource_initiate]   - Card: ****{card['number'][-4:]}")
+    print(f"[cybersource_initiate]   - Card: ****{card_number_clean[-4:] if len(card_number_clean) >= 4 else 'N/A'}")
     print(f"[cybersource_initiate]   - Expiry: {card['expirationMonth']}/{card['expirationYear']}")
     
     try:
         result = cybersource_client.create_payment(
             amount=amount,
             currency=currency,
-            card_number=card['number'],
+            card_number=card_number_clean,  # Use cleaned card number
             expiration_month=card['expirationMonth'],
             expiration_year=card['expirationYear'],
             cvv=card['cvv'],
