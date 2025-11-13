@@ -154,15 +154,31 @@ class PaymentController:
     def initiate_payment(self):
         """Initiate an M-Pesa STK push payment."""
         try:
-            print("[mpesa_initiate] handler called")
+            print("[mpesa_initiate] ========== M-Pesa Payment Initiation ==========")
+            print(f"[mpesa_initiate] Handler called at: {datetime.datetime.now(datetime.timezone.utc).isoformat()}")
+            print(f"[mpesa_initiate] Request method: {request.method}")
+            print(f"[mpesa_initiate] Request URL: {request.url}")
+            print(f"[mpesa_initiate] Request headers: {dict(request.headers)}")
+            
             if self.mpesa_client is None:
-                print("[mpesa_initiate] mpesa_client is None")
+                print("[mpesa_initiate] ❌ mpesa_client is None - M-Pesa not configured")
                 return jsonify({'error': 'M-Pesa not configured'}), 503
         
+            print(f"[mpesa_initiate] ✅ M-Pesa client available")
+            
             data = request.get_json(force=True) or {}
+            print(f"[mpesa_initiate] Request body keys: {list(data.keys())}")
+            print(f"[mpesa_initiate] Request body: {data}")
+            
             amount = float(data.get('amount', 0))
             phone_raw = (data.get('phone') or '').strip()
-            print(f"[mpesa_initiate] user_id={getattr(request, 'user_id', None)} amount={amount} phone_raw={phone_raw}")
+            user_id = getattr(request, 'user_id', None)
+            
+            print(f"[mpesa_initiate] Extracted data:")
+            print(f"[mpesa_initiate]   User ID: {user_id}")
+            print(f"[mpesa_initiate]   Amount (raw): {data.get('amount')}")
+            print(f"[mpesa_initiate]   Amount (float): {amount}")
+            print(f"[mpesa_initiate]   Phone (raw): {phone_raw}")
             
             # Validate and format phone number
             phone = self._format_phone_number(phone_raw)
@@ -231,25 +247,49 @@ class PaymentController:
         
             # Fire STK push
             description = 'KileKitabu Credits'
-            print(f"[mpesa_initiate] initiating STK push -> amount={amount} phone={phone}")
+            print(f"[mpesa_initiate] ========== Calling M-Pesa STK Push ==========")
+            print(f"[mpesa_initiate] Parameters:")
+            print(f"[mpesa_initiate]   Amount: {amount}")
+            print(f"[mpesa_initiate]   Phone: {phone}")
+            print(f"[mpesa_initiate]   Payment ID: {payment_id}")
+            print(f"[mpesa_initiate]   Description: {description}")
+            
             result = self.mpesa_client.initiate_stk_push(amount, phone, payment_id, description)
-            print(f"[mpesa_initiate] STK response: {result}")
+            
+            print(f"[mpesa_initiate] ========== M-Pesa STK Push Response ==========")
+            print(f"[mpesa_initiate] Result keys: {list(result.keys())}")
+            print(f"[mpesa_initiate] Result 'ok': {result.get('ok')}")
+            print(f"[mpesa_initiate] Result 'status_code': {result.get('status_code')}")
+            print(f"[mpesa_initiate] Result 'response': {result.get('response')}")
+            print(f"[mpesa_initiate] Result 'error': {result.get('error')}")
+            
             if not result.get('ok'):
+                print(f"[mpesa_initiate] ❌ STK Push failed")
+                print(f"[mpesa_initiate] Error details: {result.get('error')}")
                 return jsonify({'error': 'Failed to initiate M-Pesa', 'details': result}), 500
             
             # Store CheckoutRequestID for callback matching
             checkout_request_id = result.get('response', {}).get('CheckoutRequestID')
             if checkout_request_id:
+                print(f"[mpesa_initiate] ✅ CheckoutRequestID received: {checkout_request_id}")
                 payment_ref = self.db.reference(f'payments/{payment_id}')
                 payment_ref.update({'checkout_request_id': checkout_request_id})
-                print(f"[mpesa_initiate] Stored CheckoutRequestID: {checkout_request_id}")
+                print(f"[mpesa_initiate] ✅ Stored CheckoutRequestID in payment record")
+            else:
+                print(f"[mpesa_initiate] ⚠️ No CheckoutRequestID in response")
             
-            return jsonify({
+            response_data = {
                 'payment_id': payment_id,
                 'status': 'pending',
                 'credit_days': credit_days,
                 'mpesa': result.get('response', {})
-            })
+            }
+            
+            print(f"[mpesa_initiate] ✅ Payment initiated successfully")
+            print(f"[mpesa_initiate] Response data: {response_data}")
+            print(f"[mpesa_initiate] ========== M-Pesa Payment Initiation Complete ==========")
+            
+            return jsonify(response_data)
         except Exception as e:
             import traceback
             print(f"[mpesa_initiate] ERROR: {e}")
@@ -259,40 +299,94 @@ class PaymentController:
     def handle_callback(self):
         """Handle M-Pesa STK push callback."""
         print(f"[mpesa_callback] ========== M-Pesa Callback Received ==========")
+        print(f"[mpesa_callback] Timestamp: {datetime.datetime.now(datetime.timezone.utc).isoformat()}")
         print(f"[mpesa_callback] Request method: {request.method}")
-        print(f"[mpesa_callback] Request headers: {dict(request.headers)}")
+        print(f"[mpesa_callback] Request URL: {request.url}")
+        print(f"[mpesa_callback] Remote address: {request.remote_addr}")
+        print(f"[mpesa_callback] User-Agent: {request.headers.get('User-Agent', 'N/A')}")
+        print(f"[mpesa_callback] Content-Type: {request.content_type}")
+        print(f"[mpesa_callback] Content-Length: {request.content_length}")
+        print(f"[mpesa_callback] Request headers:")
+        for key, value in request.headers.items():
+            print(f"[mpesa_callback]   {key}: {value}")
         
         try:
-            payload = request.get_json(force=True) or {}
-            print(f"[mpesa_callback] Raw payload keys: {list(payload.keys())}")
+            # Get raw body first
+            raw_body = request.get_data(as_text=True)
+            print(f"[mpesa_callback] Raw request body (text): {raw_body}")
+            print(f"[mpesa_callback] Raw request body length: {len(raw_body)} bytes")
             
-            stk = ((payload or {}).get('Body') or {}).get('stkCallback') or {}
+            payload = request.get_json(force=True) or {}
+            print(f"[mpesa_callback] Parsed payload type: {type(payload).__name__}")
+            print(f"[mpesa_callback] Parsed payload keys: {list(payload.keys())}")
+            print(f"[mpesa_callback] Parsed payload: {payload}")
+            
+            # Extract STK callback data
+            body = (payload or {}).get('Body') or {}
+            print(f"[mpesa_callback] Body keys: {list(body.keys())}")
+            print(f"[mpesa_callback] Body: {body}")
+            
+            stk = body.get('stkCallback') or {}
+            print(f"[mpesa_callback] STK callback type: {type(stk).__name__}")
             print(f"[mpesa_callback] STK callback keys: {list(stk.keys())}")
+            print(f"[mpesa_callback] STK callback full data: {stk}")
             
             result_code = stk.get('ResultCode')
-            print(f"[mpesa_callback] ResultCode: {result_code} (type: {type(result_code)})")
-            result_desc = stk.get('ResultDesc')
-            if result_desc is not None:
-                print(f"[mpesa_callback] ResultDesc: {result_desc}")
+            print(f"[mpesa_callback] ResultCode: {result_code} (type: {type(result_code).__name__})")
             
-            metadata_items = ((stk.get('CallbackMetadata') or {}).get('Item')) or []
+            result_desc = stk.get('ResultDesc')
+            print(f"[mpesa_callback] ResultDesc: {result_desc} (type: {type(result_desc).__name__ if result_desc else 'None'})")
+            
+            merchant_request_id = stk.get('MerchantRequestID')
+            print(f"[mpesa_callback] MerchantRequestID: {merchant_request_id}")
+            
+            checkout_request_id = stk.get('CheckoutRequestID')
+            print(f"[mpesa_callback] CheckoutRequestID: {checkout_request_id}")
+            
+            callback_metadata = stk.get('CallbackMetadata') or {}
+            print(f"[mpesa_callback] CallbackMetadata keys: {list(callback_metadata.keys())}")
+            print(f"[mpesa_callback] CallbackMetadata: {callback_metadata}")
+            
+            metadata_items = callback_metadata.get('Item') or []
+            print(f"[mpesa_callback] Metadata items type: {type(metadata_items).__name__}")
             print(f"[mpesa_callback] Metadata items count: {len(metadata_items)}")
             
-            # Extract amount and reference
+            # Extract amount and reference from metadata
             amount = None
-            payment_id = None
-            for item in metadata_items:
+            payment_id_from_ref = None
+            receipt_number = None
+            transaction_date = None
+            phone_number = None
+            
+            print(f"[mpesa_callback] ========== Extracting Metadata Items ==========")
+            for idx, item in enumerate(metadata_items):
                 name = item.get('Name')
                 value = item.get('Value')
-                print(f"[mpesa_callback] Metadata item: {name} = {value}")
+                print(f"[mpesa_callback] Metadata item [{idx}]: Name='{name}', Value='{value}' (type: {type(value).__name__})")
+                
                 if name == 'Amount':
                     amount = float(value) if value else 0
-                if name == 'AccountReference':
-                    payment_id = value
+                    print(f"[mpesa_callback]   ✅ Extracted Amount: {amount}")
+                elif name == 'AccountReference':
+                    payment_id_from_ref = value
+                    print(f"[mpesa_callback]   ✅ Extracted AccountReference: {payment_id_from_ref}")
+                elif name == 'MpesaReceiptNumber':
+                    receipt_number = value
+                    print(f"[mpesa_callback]   ✅ Extracted MpesaReceiptNumber: {receipt_number}")
+                elif name == 'TransactionDate':
+                    transaction_date = value
+                    print(f"[mpesa_callback]   ✅ Extracted TransactionDate: {transaction_date}")
+                elif name == 'PhoneNumber':
+                    phone_number = value
+                    print(f"[mpesa_callback]   ✅ Extracted PhoneNumber: {phone_number}")
             
-            # M-Pesa doesn't return AccountReference in callback, use CheckoutRequestID instead
-            checkout_request_id = stk.get('CheckoutRequestID')
-            print(f"[mpesa_callback] Extracted - amount: {amount}, payment_id (AccountReference): {payment_id}, CheckoutRequestID: {checkout_request_id}")
+            print(f"[mpesa_callback] ========== Extracted Values Summary ==========")
+            print(f"[mpesa_callback]   Amount: {amount}")
+            print(f"[mpesa_callback]   AccountReference (payment_id): {payment_id_from_ref}")
+            print(f"[mpesa_callback]   MpesaReceiptNumber: {receipt_number}")
+            print(f"[mpesa_callback]   TransactionDate: {transaction_date}")
+            print(f"[mpesa_callback]   PhoneNumber: {phone_number}")
+            print(f"[mpesa_callback]   CheckoutRequestID: {checkout_request_id}")
             
             # Find payment by CheckoutRequestID (preferred) or AccountReference
             payment = None

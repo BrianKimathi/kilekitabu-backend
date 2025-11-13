@@ -20,7 +20,7 @@ class Config:
     
     # Application Configuration
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
-    BASE_URL = os.getenv('BASE_URL', 'https://kilekitabu-backend.onrender.com')
+    BASE_URL = os.getenv('BASE_URL', 'https://a48a7d70de00.ngrok-free.app')
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
     CRON_SECRET_KEY = os.getenv('CRON_SECRET_KEY', SECRET_KEY)  # Defaults to SECRET_KEY if not set
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -50,11 +50,13 @@ class Config:
     MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '12'))  # Allow paying up to N months in advance
     
     # M-Pesa Daraja Configuration
-    MPESA_ENV = os.getenv('MPESA_ENV', 'sandbox')  # sandbox | production
-    MPESA_CONSUMER_KEY = os.getenv('MPESA_CONSUMER_KEY', '')
-    MPESA_CONSUMER_SECRET = os.getenv('MPESA_CONSUMER_SECRET', '')
-    MPESA_SHORT_CODE = os.getenv('MPESA_SHORT_CODE', '174379')
-    MPESA_PASSKEY = os.getenv('MPESA_PASSKEY', 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919')
+    # HARDCODED FOR PRODUCTION
+    MPESA_ENV = 'production'  # Hardcoded to production
+    MPESA_CONSUMER_KEY = 'rs7K6PTbaAzDFIcmkK0Rcg8u6GphrzUTAwfpuyd4DeSv43Og'  # Production Consumer Key
+    MPESA_CONSUMER_SECRET = 'xshsALdAGkdfwjxALLBZCI7udGWB8dDSAubXs6tbbbUABvxqwfPuXml0hb7cbUYV'  # Production Consumer Secret
+    MPESA_SHORT_CODE = '3576603'  # Production BusinessShortCode (Go Live shortcode)
+    MPESA_TILL_NUMBER = '5695092'  # Production Till Number (PartyB)
+    MPESA_PASSKEY = 'bcfeb194a2df8ca55f17c2816a55234c837516ce016dcade10621ce0ffc9e84d'  # Production passkey
     MPESA_CALLBACK_URL = f"{BASE_URL}/api/mpesa/callback"
     
     # CyberSource Configuration

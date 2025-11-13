@@ -128,6 +128,7 @@ try:
             passkey=Config.MPESA_PASSKEY,
             callback_url=Config.MPESA_CALLBACK_URL,
             env=Config.MPESA_ENV,
+            till_number=Config.MPESA_TILL_NUMBER,
         )
         print("✅ M-Pesa client initialized successfully")
     else:
