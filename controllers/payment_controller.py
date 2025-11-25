@@ -204,7 +204,7 @@ class PaymentController:
             user_data = user_ref.get() or {}
             monthly = user_data.get('monthly_paid', {})
             month_spend = float(monthly.get(month_key, 0))
-            max_monthly_total = self.config.MONTHLY_CAP_KES * getattr(self.config, 'MAX_PREPAY_MONTHS', 1)
+            max_monthly_total = self.config.MONTHLY_CAP_KES * getattr(self.config, 'MAX_PREPAY_MONTHS', 12)
             remaining_cap = max(0.0, max_monthly_total - month_spend)
             print(f"[mpesa_initiate] month_spend={month_spend} remaining_cap={remaining_cap} max_monthly_total={max_monthly_total}")
         

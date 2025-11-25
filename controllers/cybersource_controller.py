@@ -210,7 +210,7 @@ def initiate_card_payment():
     month_key = now.strftime('%Y-%m')
     monthly_paid = user_data.get('monthly_paid', {}) or {}
     month_spend = float(monthly_paid.get(month_key, 0))  # month_spend is stored in KES
-    max_monthly_total = Config.MONTHLY_CAP_KES * getattr(Config, 'MAX_PREPAY_MONTHS', 1)
+    max_monthly_total = Config.MONTHLY_CAP_KES * getattr(Config, 'MAX_PREPAY_MONTHS', 12)
     remaining_cap = max(0.0, max_monthly_total - month_spend)
     
     print(f"[cybersource_initiate] 📊 Monthly cap calculation:")

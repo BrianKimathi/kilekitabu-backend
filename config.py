@@ -47,7 +47,7 @@ class Config:
     DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
     FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '14'))  # Free trial period in days
     MONTHLY_CAP_KES = float(os.getenv('MONTHLY_CAP_KES', '150'))  # Monthly cap in KES
-    MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '999'))  # Allow paying up to N months in advance (999 = no limit)
+    MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '12'))  # Allow paying up to N months in advance (max 12 months)
     USD_TO_KES_RATE = float(os.getenv('USD_TO_KES_RATE', '130.0'))  # Exchange rate: 1 USD = X KES
     
     # M-Pesa Daraja Configuration

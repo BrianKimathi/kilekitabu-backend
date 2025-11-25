@@ -183,7 +183,7 @@ class SubscriptionController:
             trial_days_remaining = 0
         
         credit_balance = user_data.get('credit_balance', 0)
-        max_prepay_months = getattr(self.config, 'MAX_PREPAY_MONTHS', 1)
+        max_prepay_months = getattr(self.config, 'MAX_PREPAY_MONTHS', 12)
         response_data = {
             'credit_balance': credit_balance,
             'is_in_trial': is_in_trial,
