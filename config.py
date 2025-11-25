@@ -32,7 +32,7 @@ class Config:
     # Google Pay (structure)
     GOOGLE_PAY_ENABLED = os.getenv('GOOGLE_PAY_ENABLED', 'True').lower() == 'true'
     GOOGLE_PAY_MIN_AMOUNT = float(os.getenv('GOOGLE_PAY_MIN_AMOUNT', '1.0'))
-    GOOGLE_PAY_PROCESSOR = os.getenv('GOOGLE_PAY_PROCESSOR', '')  # e.g., 'cybersource', 'stripe'
+    GOOGLE_PAY_PROCESSOR = os.getenv('GOOGLE_PAY_PROCESSOR', 'cybersource')  # Default to 'cybersource'
     GOOGLE_PAY_CURRENCY = os.getenv('GOOGLE_PAY_CURRENCY', 'USD')
     
     # User Reset Configuration
@@ -47,7 +47,7 @@ class Config:
     DAILY_RATE = float(os.getenv('DAILY_RATE', '5.0'))  # Cost per day in KES
     FREE_TRIAL_DAYS = int(os.getenv('FREE_TRIAL_DAYS', '14'))  # Free trial period in days
     MONTHLY_CAP_KES = float(os.getenv('MONTHLY_CAP_KES', '150'))  # Monthly cap in KES
-    MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '12'))  # Allow paying up to N months in advance
+    MAX_PREPAY_MONTHS = int(os.getenv('MAX_PREPAY_MONTHS', '999'))  # Allow paying up to N months in advance (999 = no limit)
     
     # M-Pesa Daraja Configuration
     # HARDCODED FOR PRODUCTION
@@ -74,6 +74,10 @@ class Config:
     CYBERSOURCE_CALLBACK_URL = os.getenv(
         'CYBERSOURCE_CALLBACK_URL',
         f"{BASE_URL}/api/cybersource/webhook"
+    )
+    CYBERSOURCE_HELPER_BASE_URL = os.getenv(
+        'CYBERSOURCE_HELPER_BASE_URL',
+        'https://card-payment.onrender.com'
     )
     
     # Validation Rules

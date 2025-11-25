@@ -5,6 +5,7 @@ from flask import request, jsonify
 from functools import wraps
 from firebase_admin import auth, db
 from config import Config
+from services.cybersource_helper_client import CyberSourceHelperError
 
 
 def require_auth(f):
@@ -82,16 +83,16 @@ def initiate_card_payment():
     """
     print(f"[cybersource_initiate] ========== Card Payment Initiation ==========")
     
-    # Get the CyberSource client from app context
+    # Get the CyberSource helper client from app context
     from flask import current_app
-    cybersource_client = current_app.config.get('cybersource_client')
+    cybersource_helper = current_app.config.get('cybersource_helper')
     
-    if not cybersource_client:
-        print(f"[cybersource_initiate] ❌ CyberSource client not initialized")
+    if not cybersource_helper:
+        print(f"[cybersource_initiate] ❌ CyberSource helper not initialized")
         return jsonify({
             'success': False,
             'error': 'Card payments are currently unavailable. Please use M-Pesa for payments.',
-            'details': 'CyberSource payment gateway is not configured'
+            'details': 'CyberSource helper service is not configured'
         }), 503
     
     # Get user ID from request
@@ -126,7 +127,8 @@ def initiate_card_payment():
         print(f"[cybersource_initiate]   - Country: {billing_info.get('country', 'N/A')}, Postal: {billing_info.get('postalCode', 'N/A')}")
         
         # Validate amount
-        min_amount = Config.VALIDATION_RULES['min_amount']
+        # Use lower minimum for USD card payments
+        min_amount = 1.0 if str(currency).upper() == 'USD' else Config.VALIDATION_RULES['min_amount']
         max_amount = Config.VALIDATION_RULES['max_amount']
         print(f"[cybersource_initiate] ✅ Amount validation: {amount} (min: {min_amount}, max: {max_amount})")
         
@@ -266,46 +268,54 @@ def initiate_card_payment():
         print(f"[cybersource_initiate] Firebase error traceback: {traceback.format_exc()}")
         # Continue anyway - we can still process the payment
     
-    # Process payment via CyberSource
-    print(f"[cybersource_initiate] 🚀 Initiating CyberSource payment...")
-    print(f"[cybersource_initiate]   - Reference code: {payment_id}")
-    print(f"[cybersource_initiate]   - Amount: {amount} {currency}")
-    print(f"[cybersource_initiate]   - Card: ****{card_number_clean[-4:] if len(card_number_clean) >= 4 else 'N/A'}")
-    print(f"[cybersource_initiate]   - Expiry: {card['expirationMonth']}/{card['expirationYear']}")
-    
     try:
-        result = cybersource_client.create_payment(
-            amount=amount,
-            currency=currency,
-            card_number=card_number_clean,  # Use cleaned card number
-            expiration_month=card['expirationMonth'],
-            expiration_year=card['expirationYear'],
-            cvv=card['cvv'],
-            billing_info=billing_info,
-            reference_code=payment_id,
-        )
+        # Process payment via CyberSource helper
+        print(f"[cybersource_initiate] 🚀 Initiating CyberSource payment...")
+        print(f"[cybersource_initiate]   - Reference code: {payment_id}")
+        print(f"[cybersource_initiate]   - Amount: {amount} {currency}")
+        print(f"[cybersource_initiate]   - Card: ****{card_number_clean[-4:] if len(card_number_clean) >= 4 else 'N/A'}")
+        print(f"[cybersource_initiate]   - Expiry: {card['expirationMonth']}/{card['expirationYear']}")
         
-        print(f"[cybersource_initiate] 📥 CyberSource API response received")
-        print(f"[cybersource_initiate]   - Success: {result.get('ok', False)}")
-        print(f"[cybersource_initiate]   - Status code: {result.get('status_code', 'N/A')}")
+        helper_payload = {
+            'amount': amount,
+            'currency': currency,
+            'card': {
+                'number': card_number_clean,
+                'expirationMonth': card['expirationMonth'],
+                'expirationYear': card['expirationYear'],
+            },
+            'billingInfo': billing_info,
+            'referenceCode': payment_id,
+            'capture': True,
+        }
+        if card.get('cvv'):
+            helper_payload['card']['securityCode'] = card.get('cvv')
         
-        if result.get('ok'):
-            response_data = result.get('response', {})
+        try:
+            response_data = cybersource_helper.create_card_payment(helper_payload)
+            helper_ok = True
+            helper_error = None
+            helper_status = 200
+        except CyberSourceHelperError as helper_err:
+            response_data = None
+            helper_ok = False
+            helper_error = helper_err.response or helper_err.args[0]
+            helper_status = helper_err.status_code or 500
+            print(f"[cybersource_initiate] ❌ Helper error: {helper_err}")
+        
+        print(f"[cybersource_initiate] 📥 CyberSource helper response received")
+        print(f"[cybersource_initiate]   - Success: {helper_ok}")
+        print(f"[cybersource_initiate]   - Status code: {helper_status}")
+        
+        if helper_ok and response_data:
             print(f"[cybersource_initiate]   - Transaction ID: {response_data.get('id', 'N/A')}")
             print(f"[cybersource_initiate]   - Status: {response_data.get('status', 'N/A')}")
             print(f"[cybersource_initiate]   - Response keys: {list(response_data.keys())}")
         else:
-            error_data = result.get('error', {})
-            print(f"[cybersource_initiate]   - Error type: {type(error_data)}")
-            if isinstance(error_data, dict):
-                print(f"[cybersource_initiate]   - Error keys: {list(error_data.keys())}")
-                print(f"[cybersource_initiate]   - Error message: {error_data.get('message', 'N/A')}")
-            else:
-                print(f"[cybersource_initiate]   - Error: {error_data}")
+            print(f"[cybersource_initiate]   - Error: {helper_error}")
         
-        if result.get('ok'):
+        if helper_ok and response_data:
             # Normalize success/decline using CyberSource fields
-            response_data = result['response']
             transaction_id = response_data.get('id')
             status = (response_data.get('status') or '').upper()
             error_info = response_data.get('errorInformation') or {}
@@ -426,8 +436,8 @@ def initiate_card_payment():
         
         else:
             # Payment failed
-            error = result.get('error', 'Unknown error')
-            print(f"[cybersource_initiate] ❌ Payment failed by CyberSource")
+            error = helper_error or 'Unknown error'
+            print(f"[cybersource_initiate] ❌ Payment failed via helper")
             print(f"[cybersource_initiate]   - Error: {error}")
             
             # Update payment record
@@ -448,8 +458,7 @@ def initiate_card_payment():
                 'success': False,
                 'error': str(error),
                 'payment_id': payment_id,
-            }), 400
-    
+            }), helper_status
     except Exception as e:
         print(f"[cybersource_initiate] ❌ Unexpected error: {e}")
         import traceback

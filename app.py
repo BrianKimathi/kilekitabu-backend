@@ -7,6 +7,8 @@ from core.logging_config import init_logging
 from config import Config
 from services.mpesa_integration import MpesaClient
 from services.cybersource_integration import CyberSourceClient
+from services.cybersource_helper_client import CyberSourceHelperClient
+# from services.stripe_integration import StripeClient  # Disabled - using Cybersource
 from services.fcm_v1_service import FCMV1Service, MockFCMV1Service
 from services.simple_debt_scheduler import SimpleDebtScheduler
 from services.low_credit_scheduler import LowCreditScheduler
@@ -19,6 +21,7 @@ from routes.payment import bp as payment_bp
 from routes.config_info import bp as config_info_bp
 from routes.subscription import bp as subscription_bp
 from routes.cybersource import cybersource_bp
+# from routes.stripe import bp as stripe_bp  # Disabled - using Cybersource
 from routes.cron import bp as cron_bp
 from routes.googlepay import bp as googlepay_bp
 
@@ -149,6 +152,7 @@ except Exception as e:
 
 # Initialize CyberSource Client
 cybersource_client = None
+cybersource_helper = None
 try:
     print(f"[App Init] Checking CyberSource configuration...")
     print(f"[App Init] CYBERSOURCE_MERCHANT_ID: {'SET' if Config.CYBERSOURCE_MERCHANT_ID else 'NOT SET'}")
@@ -182,6 +186,30 @@ except Exception as e:
     print(f"❌ CyberSource initialization error: {e}")
     import traceback
     print(f"Traceback: {traceback.format_exc()}")
+
+# Initialize CyberSource helper microservice client
+try:
+    if Config.CYBERSOURCE_HELPER_BASE_URL:
+        cybersource_helper = CyberSourceHelperClient(Config.CYBERSOURCE_HELPER_BASE_URL)
+        print(f"✅ CyberSource helper configured: {Config.CYBERSOURCE_HELPER_BASE_URL}")
+except Exception as helper_error:
+    print(f"❌ CyberSource helper initialization error: {helper_error}")
+
+# Stripe Client - DISABLED (using Cybersource)
+# stripe_client = None
+# try:
+#     print(f"[App Init] Checking Stripe configuration...")
+#     if Config.STRIPE_SECRET_KEY:
+#         stripe_client = StripeClient(
+#             secret_key=Config.STRIPE_SECRET_KEY,
+#             publishable_key=Config.STRIPE_PUBLISHABLE_KEY,
+#             webhook_secret=Config.STRIPE_WEBHOOK_SECRET,
+#         )
+#         print("✅ Stripe client initialized successfully")
+#     else:
+#         print(f"❌ Stripe not configured; missing STRIPE_SECRET_KEY")
+# except Exception as e:
+#     print(f"❌ Stripe initialization error: {e}")
 
 # Initialize FCM Service and Schedulers
 fcm_service = None
@@ -233,6 +261,8 @@ app.config['CONFIG'] = Config
 app.config['FCM_SERVICE'] = fcm_service
 app.config['MPESA_CLIENT'] = mpesa_client
 app.config['cybersource_client'] = cybersource_client
+app.config['cybersource_helper'] = cybersource_helper
+# app.config['stripe_client'] = stripe_client  # Disabled - using Cybersource
 app.config['GET_SMS_SCHEDULER'] = get_sms_scheduler
 
 # Register blueprints
@@ -242,6 +272,7 @@ app.register_blueprint(payment_bp)
 app.register_blueprint(subscription_bp)
 app.register_blueprint(config_info_bp)
 app.register_blueprint(cybersource_bp)
+# app.register_blueprint(stripe_bp)  # Disabled - using Cybersource
 app.register_blueprint(cron_bp)
 app.register_blueprint(googlepay_bp)
 

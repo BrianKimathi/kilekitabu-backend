@@ -77,24 +77,31 @@ class CyberSourceClient:
             Base64 encoded signature
         """
         # Signature data format for HTTP signature (CyberSource format)
-        # Validation string must match the actual HTTP header names being sent
+        # IMPORTANT: CyberSource uses 'request-target' WITHOUT parentheses (non-standard format)
+        # IMPORTANT: requests library normalizes headers to Title-Case, so we must use Title-Case
+        # in the signature string to match what's actually sent:
+        # - 'v-c-date' becomes 'V-C-Date'
+        # - 'digest' becomes 'Digest'
+        # - 'v-c-merchant-id' becomes 'V-C-Merchant-Id'
+        # - 'host' stays as 'host' (requests doesn't change it, but we use lowercase in signature)
+        host_name = self.api_base.split('//')[1]
         if method in ['POST', 'PATCH', 'PUT']:
             signature_string = (
-                f"host: {self.api_base.split('//')[1]}\n"
-                f"v-c-date: {timestamp}\n"
-                f"(request-target): {method.lower()} {resource}\n"
-                f"digest: SHA-256={digest}\n"
-                f"v-c-merchant-id: {self.merchant_id}"
+                f"host: {host_name}\n"
+                f"V-C-Date: {timestamp}\n"  # Title-Case to match requests library
+                f"request-target: {method.lower()} {resource}\n"  # NO parentheses - CyberSource format
+                f"Digest: SHA-256={digest}\n"  # Title-Case to match requests library
+                f"V-C-Merchant-Id: {self.merchant_id}"  # Title-Case to match requests library
             )
-            headers_list = "host v-c-date (request-target) digest v-c-merchant-id"
+            headers_list = "host V-C-Date request-target Digest V-C-Merchant-Id"  # Title-Case to match requests
         else:
             signature_string = (
-                f"host: {self.api_base.split('//')[1]}\n"
-                f"v-c-date: {timestamp}\n"
-                f"(request-target): {method.lower()} {resource}\n"
-                f"v-c-merchant-id: {self.merchant_id}"
+                f"host: {host_name}\n"
+                f"V-C-Date: {timestamp}\n"  # Title-Case to match requests library
+                f"request-target: {method.lower()} {resource}\n"  # NO parentheses - CyberSource format
+                f"V-C-Merchant-Id: {self.merchant_id}"  # Title-Case to match requests library
             )
-            headers_list = "host v-c-date (request-target) v-c-merchant-id"
+            headers_list = "host V-C-Date request-target V-C-Merchant-Id"  # Title-Case to match requests
         
         # Sign with HMAC-SHA256
         # Ensure secret key is properly padded for base64 decoding
@@ -142,22 +149,25 @@ class CyberSourceClient:
             Dictionary of headers
         """
         timestamp = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+        # IMPORTANT: Use lowercase header names when setting them - requests will normalize to Title-Case
+        # But the signature string must use Title-Case to match what requests actually sends
         headers = {
-            'Host': self.api_base.split('//')[1],
-            'v-c-date': timestamp,
-            'v-c-merchant-id': self.merchant_id,
+            # Note: Don't set 'Host' header - requests library sets it automatically from URL
+            # The 'host' in signature string refers to the Host header that will be sent (lowercase in signature)
+            'v-c-date': timestamp,  # requests will send as 'V-C-Date'
+            'v-c-merchant-id': self.merchant_id,  # requests will send as 'V-C-Merchant-Id'
         }
         
         if method in ['POST', 'PATCH', 'PUT'] and payload:
             payload_json = json.dumps(payload)
             digest = self._generate_digest(payload_json)
-            headers['Digest'] = f'SHA-256={digest}'
+            headers['digest'] = f'SHA-256={digest}'  # requests will send as 'Digest'
             headers['Content-Type'] = 'application/json'
             signature = self._generate_signature(method, resource, timestamp, digest)
         else:
             signature = self._generate_signature(method, resource, timestamp)
         
-        headers['Signature'] = signature
+        headers['signature'] = signature  # requests will send as 'Signature'
         
         return headers
     
@@ -225,9 +235,13 @@ class CyberSourceClient:
                             key_id = sig_hdr[start:end]
                     except Exception:
                         key_id = ''
+                # Check headers in both cases (requests normalizes to Title-Case)
+                vc_date = headers.get('v-c-date', '') or headers.get('V-C-Date', '')
+                vc_merchant = headers.get('v-c-merchant-id', '') or headers.get('V-C-Merchant-Id', '')
+                digest_set = bool(headers.get('digest') or headers.get('Digest'))
                 print("[CyberSourceClient] [CaptureContext] Headers preview: "
-                      f"Host={headers.get('Host')}, v-c-date={headers.get('v-c-date')}, "
-                      f"v-c-merchant-id={headers.get('v-c-merchant-id')}, Digest={'set' if headers.get('Digest') else 'missing'}, "
+                      f"Host={headers.get('Host', 'auto')}, v-c-date={vc_date[:20]}..., "
+                      f"v-c-merchant-id={vc_merchant[:20]}..., Digest={'set' if digest_set else 'missing'}, "
                       f"keyid={key_id}")
             except Exception as _:
                 pass
@@ -235,7 +249,27 @@ class CyberSourceClient:
                 print(f"[CyberSourceClient] [CaptureContext] Payload: {json.dumps(payload)}")
             except Exception as _:
                 print("[CyberSourceClient] [CaptureContext] Payload: <unserializable>")
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            # Retry logic for connection issues
+            max_retries = 3
+            retry_delay = 2
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    break
+                except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(f"[CyberSourceClient] [CaptureContext] ⚠️ Connection attempt {attempt + 1} failed, retrying...")
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        raise
+            
+            if 'response' not in locals():
+                raise last_exception
             print(f"[CyberSourceClient] [CaptureContext] Response status: {response.status_code}")
             if response.status_code in [200, 201]:
                 # Success: Response is a JWT token string (not JSON)
@@ -301,7 +335,27 @@ class CyberSourceClient:
             headers = self._get_headers('POST', resource, payload)
             url = f"{self.api_base}{resource}"
             print(f"[CyberSourceClient] [Payment] POST {url}")
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            # Retry logic for connection issues
+            max_retries = 3
+            retry_delay = 2
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    break
+                except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(f"[CyberSourceClient] [CaptureContext] ⚠️ Connection attempt {attempt + 1} failed, retrying...")
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        raise
+            
+            if 'response' not in locals():
+                raise last_exception
             print(f"[CyberSourceClient] [Payment] Response status: {response.status_code}")
             if response.status_code in [200, 201]:
                 result = response.json()
@@ -408,11 +462,23 @@ class CyberSourceClient:
             except Exception:
                 print(f"[CyberSourceClient] [Payment] 📤 Request payload: <unserializable>")
             
-            # Log headers (safe)
+            # Log headers (safe) - check both lowercase and Title-Case since requests normalizes
             try:
-                safe_headers = {k: v for k, v in headers.items() if k not in ['Signature', 'Digest']}
-                safe_headers['Signature'] = f"<{len(headers.get('Signature', ''))} chars>"
-                safe_headers['Digest'] = f"<{len(headers.get('Digest', ''))} chars>" if headers.get('Digest') else None
+                safe_headers = {}
+                for k, v in headers.items():
+                    # Skip sensitive headers (check both cases)
+                    if k.lower() not in ['signature', 'digest']:
+                        safe_headers[k] = v
+                
+                # Add safe versions of signature and digest
+                sig_key = 'signature' if 'signature' in headers else 'Signature'
+                digest_key = 'digest' if 'digest' in headers else 'Digest'
+                
+                if sig_key in headers:
+                    safe_headers['Signature'] = f"<{len(headers.get(sig_key, ''))} chars>"
+                if digest_key in headers:
+                    safe_headers['Digest'] = f"<{len(headers.get(digest_key, ''))} chars>"
+                
                 print(f"[CyberSourceClient] [Payment] 📤 Request headers (safe): {json.dumps(safe_headers, indent=2)}")
             except Exception:
                 print(f"[CyberSourceClient] [Payment] 📤 Request headers: <unserializable>")
@@ -420,7 +486,33 @@ class CyberSourceClient:
             print(f"[CyberSourceClient] [Payment] 🌐 POST {url}")
             print(f"[CyberSourceClient] [Payment] ⏳ Sending request to CyberSource...")
             
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            # Retry logic for connection issues
+            max_retries = 3
+            retry_delay = 2  # seconds
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+                    break  # Success, exit retry loop
+                except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(f"[CyberSourceClient] [Payment] ⚠️ Connection attempt {attempt + 1} failed: {type(e).__name__}")
+                        print(f"[CyberSourceClient] [Payment] ⏳ Retrying in {retry_delay} seconds... (attempt {attempt + 2}/{max_retries})")
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        print(f"[CyberSourceClient] [Payment] ❌ All {max_retries} connection attempts failed")
+                        raise
+                except requests.exceptions.RequestException as e:
+                    # Other request exceptions (not connection-related) - don't retry
+                    raise
+            
+            # If we get here and response is not defined, raise the last exception
+            if 'response' not in locals():
+                raise last_exception
             
             print(f"[CyberSourceClient] [Payment] 📥 Response received")
             print(f"[CyberSourceClient] [Payment]   - Status code: {response.status_code}")
@@ -547,7 +639,27 @@ class CyberSourceClient:
             print(f"[CyberSourceClient] [PaymentStatus] 🌐 POST {url}")
             print(f"[CyberSourceClient] [PaymentStatus] ⏳ Sending request to CyberSource...")
             
-            response = requests.post(url, headers=headers, timeout=30)
+            # Retry logic for connection issues
+            max_retries = 3
+            retry_delay = 2
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url, headers=headers, timeout=(10, 30))
+                    break
+                except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(f"[CyberSourceClient] [PaymentStatus] ⚠️ Connection attempt {attempt + 1} failed, retrying...")
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        raise
+            
+            if 'response' not in locals():
+                raise last_exception
             
             print(f"[CyberSourceClient] [PaymentStatus] 📥 Response received")
             print(f"[CyberSourceClient] [PaymentStatus]   - Status code: {response.status_code}")
