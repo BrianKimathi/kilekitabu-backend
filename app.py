@@ -195,6 +195,8 @@ except Exception as e:
     print(f"Traceback: {traceback.format_exc()}")
 
 # Initialize CyberSource helper microservice client (Node.js backend)
+# Defaults to: https://card-payment-hso8.onrender.com (Render deployment)
+# Can be overridden via CYBERSOURCE_HELPER_BASE_URL environment variable
 cybersource_helper = None
 try:
     helper_base = Config.CYBERSOURCE_HELPER_BASE_URL

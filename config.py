@@ -84,7 +84,7 @@ class Config:
     # Optional Node.js helper service for CyberSource (cards + Google Pay)
     CYBERSOURCE_HELPER_BASE_URL = os.getenv(
         'CYBERSOURCE_HELPER_BASE_URL',
-        'http://localhost:4000'  # Default to local Node helper; override in .env as needed
+        'https://card-payment-hso8.onrender.com'  # Default to Render deployment; override in .env as needed
     )
     # Validation Rules
     VALIDATION_RULES = {
