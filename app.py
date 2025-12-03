@@ -150,9 +150,8 @@ except Exception as e:
     import traceback
     print(f"Traceback: {traceback.format_exc()}")
 
-# Initialize CyberSource Client
 cybersource_client = None
-cybersource_helper = None
+cybersource_flex_client = None
 try:
     print(f"[App Init] Checking CyberSource configuration...")
     print(f"[App Init] CYBERSOURCE_MERCHANT_ID: {'SET' if Config.CYBERSOURCE_MERCHANT_ID else 'NOT SET'}")
@@ -160,6 +159,7 @@ try:
     print(f"[App Init] CYBERSOURCE_SECRET_KEY: {'SET' if Config.CYBERSOURCE_SECRET_KEY else 'NOT SET'}")
     print(f"[App Init] CYBERSOURCE_ENV: {Config.CYBERSOURCE_ENV}")
     print(f"[App Init] CYBERSOURCE_API_BASE: {Config.CYBERSOURCE_API_BASE}")
+    print(f"[App Init] CYBERSOURCE_FLEX_API_BASE: {Config.CYBERSOURCE_FLEX_API_BASE}")
     
     if all([
         Config.CYBERSOURCE_MERCHANT_ID,
@@ -172,7 +172,14 @@ try:
             secret_key=Config.CYBERSOURCE_SECRET_KEY,
             api_base=Config.CYBERSOURCE_API_BASE,
         )
+        cybersource_flex_client = CyberSourceClient(
+            merchant_id=Config.CYBERSOURCE_MERCHANT_ID,
+            api_key_id=Config.CYBERSOURCE_API_KEY_ID,
+            secret_key=Config.CYBERSOURCE_SECRET_KEY,
+            api_base=Config.CYBERSOURCE_FLEX_API_BASE,
+        )
         print("✅ CyberSource client initialized successfully")
+        print("✅ CyberSource Flex Sessions client initialized successfully")
     else:
         missing = []
         if not Config.CYBERSOURCE_MERCHANT_ID:
@@ -187,13 +194,18 @@ except Exception as e:
     import traceback
     print(f"Traceback: {traceback.format_exc()}")
 
-# Initialize CyberSource helper microservice client
+# Initialize CyberSource helper microservice client (Node.js backend)
+cybersource_helper = None
 try:
-    if Config.CYBERSOURCE_HELPER_BASE_URL:
-        cybersource_helper = CyberSourceHelperClient(Config.CYBERSOURCE_HELPER_BASE_URL)
-        print(f"✅ CyberSource helper configured: {Config.CYBERSOURCE_HELPER_BASE_URL}")
+    helper_base = Config.CYBERSOURCE_HELPER_BASE_URL
+    if helper_base and helper_base.strip():
+        cybersource_helper = CyberSourceHelperClient(helper_base)
+        print(f"✅ CyberSource helper configured: {helper_base}")
+    else:
+        print("ℹ️ CyberSource helper disabled (CYBERSOURCE_HELPER_BASE_URL not set or empty)")
 except Exception as helper_error:
     print(f"❌ CyberSource helper initialization error: {helper_error}")
+    cybersource_helper = None
 
 # Stripe Client - DISABLED (using Cybersource)
 # stripe_client = None
@@ -261,6 +273,7 @@ app.config['CONFIG'] = Config
 app.config['FCM_SERVICE'] = fcm_service
 app.config['MPESA_CLIENT'] = mpesa_client
 app.config['cybersource_client'] = cybersource_client
+app.config['cybersource_flex_client'] = cybersource_flex_client
 app.config['cybersource_helper'] = cybersource_helper
 # app.config['stripe_client'] = stripe_client  # Disabled - using Cybersource
 app.config['GET_SMS_SCHEDULER'] = get_sms_scheduler

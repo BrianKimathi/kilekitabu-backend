@@ -5,7 +5,7 @@ from flask import request, jsonify
 from functools import wraps
 from firebase_admin import auth, db
 from config import Config
-from services.cybersource_helper_client import CyberSourceHelperError
+from services.exchange_rate_service import convert_amount_to_kes, compute_credit_days_from_kes
 
 
 def require_auth(f):
@@ -81,19 +81,19 @@ def initiate_card_payment():
         }
     }
     """
-    print(f"[cybersource_initiate] ========== Card Payment Initiation ==========")
-    
-    # Get the CyberSource helper client from app context
-    from flask import current_app
-    cybersource_helper = current_app.config.get('cybersource_helper')
-    
-    if not cybersource_helper:
-        print(f"[cybersource_initiate] ❌ CyberSource helper not initialized")
-        return jsonify({
-            'success': False,
-            'error': 'Card payments are currently unavailable. Please use M-Pesa for payments.',
-            'details': 'CyberSource helper service is not configured'
-        }), 503
+    print(f"[cybersource_initiate] ========== Card Payment Initiation (LEGACY RAW CARD) ==========")
+    # NOTE: This legacy endpoint previously proxied to a Node helper service.
+    # The recommended flows are now:
+    # - Card payments via Flex transientToken: POST /api/cybersource/flex/charge
+    # - Google Pay via /api/googlepay/charge (native blob or transientToken)
+    #
+    # To keep the backend focused on FCM + payments with a single Flask stack,
+    # we no longer process raw PANs here. Direct callers should migrate to the
+    # Flex / tokenized flow instead of sending full card details to the backend.
+    return jsonify({
+        'success': False,
+        'error': 'Legacy raw-card endpoint disabled. Please use Flex transientToken via /api/cybersource/flex/charge.'
+    }), 410
     
     # Get user ID from request
     user_id = getattr(request, 'user_id', None)
@@ -193,53 +193,17 @@ def initiate_card_payment():
         print(f"[cybersource_initiate] ❌ Invalid request data: {e}")
         return jsonify({'error': 'Invalid request data'}), 400
     
-    # Convert USD to KES if needed for calculations
-    currency_upper = str(currency).upper()
-    amount_in_kes = amount
-    if currency_upper == 'USD':
-        usd_to_kes_rate = getattr(Config, 'USD_TO_KES_RATE', 130.0)
-        amount_in_kes = amount * usd_to_kes_rate
-        print(f"[cybersource_initiate] 💱 Currency conversion: {amount} USD = {amount_in_kes:.2f} KES (rate: {usd_to_kes_rate})")
+    # Convert to KES for monthly-cap & credit calculations
+    amount_in_kes = convert_amount_to_kes(amount, currency)
+    print(
+        f"[cybersource_initiate] 💱 Currency conversion: {amount} {currency} "
+        f"= {amount_in_kes:.2f} KES"
+    )
     
     # Fetch user record for monthly spend calculations
-    print(f"[cybersource_initiate] 📊 Fetching user data for monthly cap calculation...")
+    print(f"[cybersource_initiate] 📊 Monthly cap disabled for legacy endpoint (use Flex for new flows)")
     user_ref = db.reference(f'registeredUser/{user_id}')
     user_data = user_ref.get() or {}
-    
-    now = datetime.datetime.now(datetime.timezone.utc)
-    month_key = now.strftime('%Y-%m')
-    monthly_paid = user_data.get('monthly_paid', {}) or {}
-    month_spend = float(monthly_paid.get(month_key, 0))  # month_spend is stored in KES
-    max_monthly_total = Config.MONTHLY_CAP_KES * getattr(Config, 'MAX_PREPAY_MONTHS', 12)
-    remaining_cap = max(0.0, max_monthly_total - month_spend)
-    
-    print(f"[cybersource_initiate] 📊 Monthly cap calculation:")
-    print(f"[cybersource_initiate]   - Month: {month_key}")
-    print(f"[cybersource_initiate]   - Current month spend: {month_spend} KES")
-    print(f"[cybersource_initiate]   - Max monthly total: {max_monthly_total} KES")
-    print(f"[cybersource_initiate]   - Remaining cap: {remaining_cap} KES")
-    print(f"[cybersource_initiate]   - Requested amount: {amount} {currency} ({amount_in_kes:.2f} KES)")
-    
-    if remaining_cap <= 0:
-        print(f"[cybersource_initiate] ❌ Monthly cap reached: {month_spend} >= {max_monthly_total}")
-        return jsonify({
-            'error': 'Monthly cap reached',
-            'cap': max_monthly_total,
-            'month': month_key
-        }), 400
-    
-    if amount_in_kes > remaining_cap:
-        print(f"[cybersource_initiate] ❌ Amount exceeds remaining cap: {amount_in_kes:.2f} KES > {remaining_cap}")
-        return jsonify({
-            'error': (
-                f'Amount exceeds remaining allowance. You can pay up to '
-                f'KES {int(remaining_cap)} right now (max {int(max_monthly_total)} per month).'
-            ),
-            'remaining': remaining_cap,
-            'requested': amount_in_kes
-        }), 400
-    
-    print(f"[cybersource_initiate] ✅ Monthly cap check passed: {amount_in_kes:.2f} KES <= {remaining_cap}")
     
     # Generate unique reference
     payment_id = f"CS_{user_id[:8]}_{uuid.uuid4().hex[:12]}"
@@ -393,13 +357,14 @@ def initiate_card_payment():
                     
                     print(f"[cybersource_initiate]   - Current credit balance: {current_credit} days")
                     
-                    # Use amount_in_kes (already converted earlier if USD) for credit calculation
+                    # Use amount_in_kes (already converted earlier) for credit calculation.
+                    # Round the KES amount so it's a multiple of 5, then convert to days using DAILY_RATE.
                     daily_rate = Config.DAILY_RATE if Config.DAILY_RATE else 1
-                    credit_days = max(1, int(amount_in_kes / daily_rate))
+                    credit_days, rounded_kes = compute_credit_days_from_kes(amount_in_kes, daily_rate)
                     new_credit = current_credit + credit_days
                     
                     print(f"[cybersource_initiate]   - Daily rate: {daily_rate} KES/day")
-                    print(f"[cybersource_initiate]   - Credit days to add: {credit_days} (amount: {amount_in_kes:.2f} KES / rate: {daily_rate} KES/day)")
+                    print(f"[cybersource_initiate]   - Credit days to add: {credit_days} (amount: {rounded_kes:.2f} KES / rate: {daily_rate} KES/day)")
                     print(f"[cybersource_initiate]   - New credit balance: {new_credit} days")
                     
                     updated_monthly = latest_user_data.get('monthly_paid', {}) or {}
@@ -822,13 +787,9 @@ def create_subscription():
                     
                     # Add credits to user account
                     if status == 'AUTHORIZED':
-                        # Convert USD to KES if needed for credit calculation
-                        currency_upper = str(currency).upper()
-                        amount_in_kes = amount
-                        if currency_upper == 'USD':
-                            usd_to_kes_rate = getattr(Config, 'USD_TO_KES_RATE', 130.0)
-                            amount_in_kes = amount * usd_to_kes_rate
-                            print(f"[cybersource_subscription]   - Converted {amount} USD to {amount_in_kes:.2f} KES for credit calculation")
+                        # Convert to KES for credit calculation (handles USD or KES)
+                        amount_in_kes = convert_amount_to_kes(amount, currency)
+                        print(f"[cybersource_subscription]   - Using {amount_in_kes:.2f} KES for credit calculation from {amount} {currency}")
                         
                         user_ref = db.reference(f'registeredUser/{user_id}')
                         user_data = user_ref.get() or {}
@@ -844,7 +805,7 @@ def create_subscription():
                                 current_credit = 0
                         
                         daily_rate = Config.DAILY_RATE if Config.DAILY_RATE else 1
-                        credit_days = max(1, int(amount_in_kes / daily_rate))
+                        credit_days, rounded_kes = compute_credit_days_from_kes(amount_in_kes, daily_rate)
                         new_credit = current_credit + credit_days
                         
                         user_ref.update({
@@ -854,7 +815,7 @@ def create_subscription():
                             'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                         })
                         
-                        print(f"[cybersource_subscription] ✅ Added {credit_days} credit days ({amount_in_kes:.2f} KES / {daily_rate} KES/day). New balance: {new_credit} days")
+                        print(f"[cybersource_subscription] ✅ Added {credit_days} credit days ({rounded_kes:.2f} KES / {daily_rate} KES/day). New balance: {new_credit} days")
                     
                     # Record subscription for future renewals
                     subs_ref = db.reference(f'subscriptions/{user_id}')

@@ -1,10 +1,12 @@
 """Google Pay controller - scaffolding for Google Pay payments."""
+import base64
 import datetime
 import json
 import uuid
 from flask import request, jsonify, current_app
 from controllers.subscription_controller import require_auth
 from services.cybersource_helper_client import CyberSourceHelperError
+from services.exchange_rate_service import convert_amount_to_kes, compute_credit_days_from_kes
 
 
 class GooglePayController:
@@ -122,7 +124,12 @@ class GooglePayController:
 
     @require_auth
     def charge(self):
-        """Accept Google Pay transient token and create/capture a payment via configured processor."""
+        """Accept Google Pay token/blob and create/capture a payment via configured processor.
+
+        Supports two main flows:
+        - Unified Checkout transientToken (legacy / WebView helper flow)
+        - Native Google Pay blob (Base64-encoded payment token, processed via CyberSource)
+        """
         try:
             if not self.db:
                 return jsonify({'error': 'Database unavailable'}), 503
@@ -136,6 +143,14 @@ class GooglePayController:
             currency = (data.get('currency') or 'USD').upper()
             transient_token = data.get('transientToken')
             google_pay_token = data.get('googlePayToken') or data.get('paymentData')
+            googlepay_blob = data.get('googlePayBlob')  # Base64-encoded Google Pay blob (preferred for native flow)
+            print(
+                "[googlepay_charge] Parsed payload fields: "
+                f"amount={amount} {currency}, "
+                f"transientToken_present={bool(transient_token)}, "
+                f"googlePayToken_present={bool(google_pay_token)}, "
+                f"googlePayBlob_len={len(googlepay_blob or '')}"
+            )
             client_billing_info = data.get('billingInfo') or {}
 
             min_amount = float(getattr(self.config, 'GOOGLE_PAY_MIN_AMOUNT', 1.0))
@@ -150,9 +165,8 @@ class GooglePayController:
             if amount < min_amount:
                 return jsonify({'error': f"Minimum amount is {currency} {min_amount:.2f}"}), 400
 
-            if not (transient_token or google_pay_token):
-                return jsonify({'error': 'transientToken (preferred) or googlePayToken is required'}), 400
-            transient_token = transient_token or google_pay_token
+            if not (transient_token or google_pay_token or googlepay_blob):
+                return jsonify({'error': 'transientToken, googlePayToken or googlePayBlob is required'}), 400
 
             # Create a payment record (pending) - will be updated after processor capture
             user_id = getattr(request, 'user_id', None)
@@ -187,53 +201,172 @@ class GooglePayController:
             print(f"[googlepay_charge] payment created id={payment_id}")
 
             if (processor or '').strip().lower() == 'cybersource':
-                helper_client = current_app.config.get('cybersource_helper')
-                if not helper_client:
-                    return jsonify({'error': 'CyberSource helper not configured'}), 503
-
                 reference_code = payment_id[:27]  # keep within sample limits
+                print(f"[googlepay_charge] Using reference_code={reference_code}")
 
-                if not transient_token:
-                    return jsonify({'error': 'Provide transientToken obtained via capture-context'}), 400
+                # Prefer native Google Pay blob if provided (Base64-encoded payment blob)
+                if googlepay_blob:
+                    # Normalise googlePayBlob to a Base64-encoded string if needed
+                    try:
+                        blob_value = googlepay_blob
+                        if isinstance(blob_value, (dict, list)):
+                            blob_json = json.dumps(blob_value)
+                            blob_value = base64.b64encode(blob_json.encode('utf-8')).decode('utf-8')
+                        elif isinstance(blob_value, str) and blob_value.strip().startswith('{'):
+                            blob_json = blob_value.strip()
+                            blob_value = base64.b64encode(blob_json.encode('utf-8')).decode('utf-8')
+                        # Otherwise assume it is already Base64-encoded
+                    except Exception as enc_err:
+                        print(f"[googlepay_charge] ⚠️ Failed to normalise googlePayBlob, using raw value: {enc_err}")
+                        blob_value = str(googlepay_blob)
 
-                helper_payload = {
-                    'transientToken': transient_token,
-                    'amount': amount,
-                    'currency': currency,
-                    'referenceCode': reference_code,
-                }
-                if billing_info:
-                    helper_payload['billingInfo'] = billing_info
-                print(
-                    "[googlepay_charge] ⏩ Forwarding to helper: "
-                    f"{json.dumps({**helper_payload, 'transientToken': '***'}, default=str)}"
-                )
+                    helper_client = current_app.config.get('cybersource_helper')
+                    if not helper_client:
+                        return jsonify({'error': 'CyberSource helper not configured'}), 503
 
-                try:
-                    resp = helper_client.charge_googlepay_token(helper_payload) or {}
+                    helper_payload = {
+                        'googlePayBlob': blob_value,
+                        'amount': amount,
+                        'currency': currency,
+                        'referenceCode': reference_code,
+                        'billingInfo': billing_info,
+                    }
+
                     print(
-                        "[googlepay_charge] ✅ Helper response: "
-                        f"{json.dumps(resp, default=str)}"
+                        "[googlepay_charge] ⏩ Sending Google Pay blob to helper service "
+                        f"(blob_len={len(str(blob_value))})"
                     )
-                except CyberSourceHelperError as helper_err:
-                    error_payload = helper_err.response or helper_err.args[0]
-                    self.db.reference(f'payments/{payment_id}').update({
-                        'status': 'failed',
-                        'provider_error': error_payload,
-                        'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    })
-                    return jsonify({
-                        'success': False,
-                        'payment_id': payment_id,
-                        'error': error_payload,
-                    }), helper_err.status_code or 500
+                    try:
+                        resp = helper_client.charge_googlepay_token(helper_payload) or {}
+                        print(
+                            "[googlepay_charge] ✅ Helper Google Pay response: "
+                            f"{json.dumps(resp, default=str)}"
+                        )
+                    except CyberSourceHelperError as helper_err:
+                        error_payload = helper_err.response or helper_err.args[0]
+                        status_code = helper_err.status_code or 500
+                        print(
+                            "[googlepay_charge] ❌ Helper Google Pay error: "
+                            f"status_code={status_code}, error={error_payload}"
+                        )
+                        self.db.reference(f'payments/{payment_id}').update({
+                            'status': 'failed',
+                            'provider_error': error_payload,
+                            'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        })
+                        return jsonify({
+                            'success': False,
+                            'payment_id': payment_id,
+                            'error': error_payload,
+                        }), status_code
 
-                status = (resp.get('status') or '').upper()
+                    # Check for CyberSource error in helper response (e.g., INVALID_ACCOUNT)
+                    error_info = resp.get('errorInformation')
+                    if error_info:
+                        error_reason = error_info.get('reason', 'Unknown error')
+                        error_message = error_info.get('message', 'Payment declined')
+                        error_payload = f"{error_reason}: {error_message}"
+                        print(
+                            "[googlepay_charge] ❌ CyberSource payment error (helper): "
+                            f"{error_payload}"
+                        )
+                        self.db.reference(f'payments/{payment_id}').update({
+                            'status': 'failed',
+                            'provider_error': error_payload,
+                            'provider_data': resp,
+                            'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        })
+                        return jsonify({
+                            'success': False,
+                            'payment_id': payment_id,
+                            'error': error_payload,
+                            'errorInformation': error_info,
+                        }), 400
+
+                    status = (resp.get('status') or '').upper()
+                    print(f"[googlepay_charge] ✅ Helper Google Pay payment ok: status={status}, id={resp.get('id')}")
+                else:
+                    # Unified Checkout / Flex transientToken flow via Node helper
+                    helper_client = current_app.config.get('cybersource_helper')
+                    if not helper_client:
+                        return jsonify({'error': 'CyberSource helper not configured'}), 503
+
+                    if not transient_token and not google_pay_token:
+                        return jsonify({'error': 'Provide transientToken or googlePayToken'}), 400
+
+                    token_value = (transient_token or google_pay_token or "").strip()
+                    if not token_value:
+                        return jsonify({'error': 'transientToken/googlePayToken is empty'}), 400
+
+                    helper_payload = {
+                        'transientToken': token_value,
+                        'amount': amount,
+                        'currency': currency,
+                        'referenceCode': reference_code,
+                        'billingInfo': billing_info,
+                    }
+                    print(
+                        "[googlepay_charge] ⏩ Forwarding transientToken to helper: "
+                        f"{json.dumps({**helper_payload, 'transientToken': '***'}, default=str)}"
+                    )
+
+                    try:
+                        resp = helper_client.charge_googlepay_token(helper_payload) or {}
+                        print(
+                            "[googlepay_charge] ✅ Helper response: "
+                            f"{json.dumps(resp, default=str)}"
+                        )
+                    except CyberSourceHelperError as helper_err:
+                        error_payload = helper_err.response or helper_err.args[0]
+                        status_code = helper_err.status_code or 500
+                        print(
+                            "[googlepay_charge] ❌ Helper transientToken error: "
+                            f"status_code={status_code}, error={error_payload}"
+                        )
+                        self.db.reference(f'payments/{payment_id}').update({
+                            'status': 'failed',
+                            'provider_error': error_payload,
+                            'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        })
+                        return jsonify({
+                            'success': False,
+                            'payment_id': payment_id,
+                            'error': error_payload,
+                        }), status_code
+
+                    # Check for CyberSource error in helper response
+                    error_info = resp.get("errorInformation")
+                    if error_info:
+                        error_reason = error_info.get("reason", "Unknown error")
+                        error_message = error_info.get("message", "Payment declined")
+                        error_payload = f"{error_reason}: {error_message}"
+                        print(
+                            "[googlepay_charge] ❌ CyberSource payment error (helper transientToken): "
+                            f"{error_payload}"
+                        )
+                        self.db.reference(f'payments/{payment_id}').update({
+                            'status': 'failed',
+                            'provider_error': error_payload,
+                            'provider_data': resp,
+                            'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        })
+                        return jsonify({
+                            'success': False,
+                            'payment_id': payment_id,
+                            'error': error_payload,
+                            'errorInformation': error_info,
+                        }), 400
+
+                    status = (resp.get('status') or '').upper()
                 now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-                # Compute credit days (same heuristic as other flows)
+                # Compute credit days.
+                # For USD card/Google Pay we first convert to KES, then round so that the
+                # underlying KES amount ends with 0 or 5 (nearest multiple of 5), and
+                # finally derive days using DAILY_RATE.
                 daily_rate = float(getattr(self.config, 'DAILY_RATE', 5.0))
-                credit_days = max(1, int(amount / daily_rate)) if daily_rate > 0 else int(amount)
+                amount_in_kes = convert_amount_to_kes(amount, currency)
+                credit_days, rounded_kes = compute_credit_days_from_kes(amount_in_kes, daily_rate)
 
                 # Update user credit
                 try:
@@ -245,7 +378,8 @@ class GooglePayController:
                     # Monthly spend tracking
                     month_key = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m')
                     monthly = user_data.get('monthly_paid', {}) or {}
-                    monthly[month_key] = float(monthly.get(month_key, 0) or 0) + float(amount)
+                    # Track monthly spend in KES so everything is on the same unit.
+                    monthly[month_key] = float(monthly.get(month_key, 0) or 0) + float(amount_in_kes)
 
                     new_credit = current_credit + credit_days
                     registered_user_ref.update({

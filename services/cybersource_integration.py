@@ -171,6 +171,56 @@ class CyberSourceClient:
         
         return headers
     
+    def create_flex_capture_context(self) -> Dict[str, Any]:
+        """
+        Create a Flex Sessions capture context for card tokenization (Flex SDK).
+
+        This calls the /flex/v2/sessions endpoint and returns the raw JWT in
+        the 'captureContext' field.
+        """
+        resource = "/flex/v2/sessions"
+        payload: Dict[str, Any] = {
+            "fields": {
+                "paymentInformation": {
+                    "card": {
+                        "number": {"required": True},
+                        "securityCode": {"required": True},
+                        "expirationMonth": {"required": True},
+                        "expirationYear": {"required": True},
+                        "type": {"required": False},
+                    }
+                }
+            }
+        }
+        try:
+            headers = self._get_headers("POST", resource, payload)
+            url = f"{self.api_base}{resource}"
+            print(f"[CyberSourceClient] [FlexSessions] POST {url}")
+            try:
+                print(f"[CyberSourceClient] [FlexSessions] Payload: {json.dumps(payload)}")
+            except Exception:
+                print("[CyberSourceClient] [FlexSessions] Payload: <unserializable>")
+
+            response = requests.post(url, json=payload, headers=headers, timeout=(10, 30))
+            print(f"[CyberSourceClient] [FlexSessions] Response status: {response.status_code}")
+            if response.status_code in [200, 201]:
+                # /flex/v2/sessions returns JWT as plain string body
+                jwt_raw = response.text.strip().strip('"')
+                print("[CyberSourceClient] [FlexSessions] ✅ Capture context created")
+                return {"ok": True, "captureContext": jwt_raw, "status_code": response.status_code}
+            error_data = response.json() if response.text else {}
+            print(f"[CyberSourceClient] [FlexSessions] ❌ Failed: {error_data}")
+            return {"ok": False, "error": error_data, "status_code": response.status_code}
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [FlexSessions] ❌ Request error: {e}")
+            return {"ok": False, "error": str(e), "status_code": 500}
+        except Exception as e:
+            print(f"[CyberSourceClient] [FlexSessions] ❌ Unexpected error: {e}")
+            import traceback
+
+            print(traceback.format_exc())
+            return {"ok": False, "error": str(e), "status_code": 500}
+    
     def create_capture_context(
         self,
         target_origins: list,
@@ -275,7 +325,13 @@ class CyberSourceClient:
                 # Success: Response is a JWT token string (not JSON)
                 capture_context_token = response.text.strip()
                 print(f"[CyberSourceClient] [CaptureContext] ✅ Success - JWT token length: {len(capture_context_token)}")
-                print(f"[CyberSourceClient] [CaptureContext] Token preview: {capture_context_token[:50]}...")
+                # Log the full JWT so we can inspect the complete Unified Checkout configuration
+                # This is sandbox-only debug logging; for production you should remove or mask this.
+                try:
+                    print(f"[CyberSourceClient] [CaptureContext] Full JWT captureContext:\n{capture_context_token}")
+                except Exception:
+                    # Fallback in case of any encoding/printing issues
+                    print("[CyberSourceClient] [CaptureContext] Full JWT captureContext: <unprintable>")
                 # Return the token in the expected format
                 return {
                     'ok': True,
@@ -372,7 +428,135 @@ class CyberSourceClient:
             import traceback
             print(traceback.format_exc())
             return {'ok': False, 'error': str(e), 'status_code': 500}
-    
+
+    def create_googlepay_payment_from_blob(
+        self,
+        amount: float,
+        currency: str,
+        googlepay_blob_base64: str,
+        reference_code: str,
+        capture: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Process a Google Pay payment using the encrypted payment blob (Barclays decryption option).
+
+        The blob must be a Base64-encoded Google Pay payment token as described in the
+        Cybersource Google Pay documentation (paymentInformation.fluidData.value +
+        processingInformation.paymentSolution = "012").
+        """
+        print(
+            "[CyberSourceClient] [Payment][GooglePay] Creating payment from Google Pay blob "
+            f"(amount={amount} {currency}, ref={reference_code}, blob_len={len(googlepay_blob_base64 or '')})"
+        )
+        resource = "/pts/v2/payments"
+        payload = {
+            "clientReferenceInformation": {"code": reference_code},
+            "processingInformation": {
+                "capture": capture,
+                # Payment solution 012 = Google Pay via Barclays decryption
+                "paymentSolution": "012",
+            },
+            "orderInformation": {
+                "amountDetails": {
+                    "totalAmount": str(amount),
+                    "currency": currency,
+                }
+            },
+            "paymentInformation": {
+                "fluidData": {
+                    "value": googlepay_blob_base64,
+                }
+            },
+        }
+
+        try:
+            headers = self._get_headers("POST", resource, payload)
+            url = f"{self.api_base}{resource}"
+            print(f"[CyberSourceClient] [Payment][GooglePay] POST {url}")
+
+            # Retry logic for connection issues
+            max_retries = 3
+            retry_delay = 2
+            last_exception = None
+
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        url, json=payload, headers=headers, timeout=(10, 30)
+                    )
+                    break
+                except (
+                    requests.exceptions.ConnectTimeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                ) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(
+                            f"[CyberSourceClient] [Payment][GooglePay] ⚠️ Connection attempt {attempt + 1} failed, retrying..."
+                        )
+                        import time
+
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        raise
+
+            if "response" not in locals():
+                raise last_exception
+
+            print(
+                f"[CyberSourceClient] [Payment][GooglePay] Response status: {response.status_code}"
+            )
+            if response.status_code in [200, 201]:
+                result = response.json()
+                print(
+                    "[CyberSourceClient] [Payment][GooglePay] ✅ Payment successful (Google Pay blob)"
+                )
+                return {"ok": True, "response": result, "status_code": response.status_code}
+
+            # Log as much as possible on failure to help diagnose 4xx/5xx
+            try:
+                error_data = response.json() if response.text else {}
+            except Exception:
+                error_data = {"raw": response.text[:1000]}
+
+            print(
+                f"[CyberSourceClient] [Payment][GooglePay] ❌ Payment failed: "
+                f"status_code={response.status_code}, error={error_data}"
+            )
+            try:
+                print(
+                    "[CyberSourceClient] [Payment][GooglePay] ❌ Response headers: "
+                    f"{dict(response.headers)}"
+                )
+            except Exception:
+                pass
+            try:
+                print(
+                    "[CyberSourceClient] [Payment][GooglePay] ❌ Raw response body: "
+                    f"{response.text[:2000]}"
+                )
+            except Exception:
+                pass
+            # Highlight common auth issues for easier debugging
+            if response.status_code == 401:
+                print(
+                    "[CyberSourceClient] [Payment][GooglePay] ⚠️ 401 Authentication Failed – "
+                    "check CYBERSOURCE_MERCHANT_ID / API_KEY_ID / SECRET_KEY and that Google Pay "
+                    "is enabled for this merchant in the sandbox environment."
+                )
+            return {"ok": False, "error": error_data, "status_code": response.status_code}
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [Payment][GooglePay] ❌ Request error: {e}")
+            return {"ok": False, "error": str(e), "status_code": 500}
+        except Exception as e:
+            print(f"[CyberSourceClient] [Payment][GooglePay] ❌ Unexpected error: {e}")
+            import traceback
+
+            print(traceback.format_exc())
+            return {"ok": False, "error": str(e), "status_code": 500}
+
     def create_payment(
         self,
         amount: float,

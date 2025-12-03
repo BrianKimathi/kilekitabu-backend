@@ -196,7 +196,7 @@ class PaymentController:
                     'error': f"Minimum amount is KES {int(self.config.VALIDATION_RULES.get('min_amount', 10))}"
                 }), 400
         
-            # Enforce monthly cap
+            # Monthly cap removed: allow users to pay for up to 12 months (or more) in advance.
             user_id = request.user_id
             now = datetime.datetime.now(datetime.timezone.utc)
             month_key = now.strftime('%Y-%m')
@@ -204,27 +204,7 @@ class PaymentController:
             user_data = user_ref.get() or {}
             monthly = user_data.get('monthly_paid', {})
             month_spend = float(monthly.get(month_key, 0))
-            max_monthly_total = self.config.MONTHLY_CAP_KES * getattr(self.config, 'MAX_PREPAY_MONTHS', 12)
-            remaining_cap = max(0.0, max_monthly_total - month_spend)
-            print(f"[mpesa_initiate] month_spend={month_spend} remaining_cap={remaining_cap} max_monthly_total={max_monthly_total}")
-        
-            if remaining_cap <= 0:
-                return jsonify({
-                    'error': 'Monthly cap reached',
-                    'cap': max_monthly_total,
-                    'month': month_key
-                }), 400
-        
-            if amount > remaining_cap:
-                print(f"[mpesa_initiate] ❌ Amount {amount} exceeds remaining cap {remaining_cap}")
-                return jsonify({
-                    'error': (
-                        f'Amount exceeds remaining allowance. You can pay up to '
-                        f'KES {int(remaining_cap)} right now (max {int(max_monthly_total)} per month).'
-                    ),
-                    'remaining': remaining_cap,
-                    'requested': amount
-                }), 400
+            print(f"[mpesa_initiate] month_spend={month_spend} (monthly cap disabled, allowing long-term top-ups)")
         
             # Create payment record
             payment_id = str(uuid.uuid4())

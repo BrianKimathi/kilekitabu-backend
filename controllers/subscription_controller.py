@@ -13,27 +13,77 @@ def require_auth(f):
         try:
             db = current_app.config.get('DB')
             if db is None:
+                print("[Auth] ❌ DB not configured; auth unavailable")
                 return jsonify({'error': 'Authentication service unavailable'}), 503
             
             auth_header = request.headers.get('Authorization')
+            print(f"[Auth] Checking authentication for {request.path}")
+            print(f"[Auth] Authorization header present: {bool(auth_header)}")
             if not auth_header or not auth_header.startswith('Bearer '):
                 # Allow unauth testing when enabled
                 cfg = current_app.config.get('CONFIG')
                 if getattr(cfg, 'ALLOW_UNAUTH_TEST', False):
                     test_user = request.args.get('user_id') or (request.json or {}).get('user_id') if request.is_json else None
                     if test_user:
+                        print(f"[Auth] ALLOW_UNAUTH_TEST enabled, using test user_id={test_user}")
                         request.user_id = test_user
                         return f(*args, **kwargs)
+                print("[Auth] ❌ No Bearer token provided")
                 return jsonify({'error': 'No token provided'}), 401
             
             token = auth_header.split('Bearer ')[1]
             try:
+                print(f"[Auth] Attempting to verify Firebase ID token...")
                 decoded_token = auth.verify_id_token(token)
                 request.user_id = decoded_token['uid']
+                print(f"[Auth] ✅ Token verified successfully, User ID: {request.user_id}")
                 return f(*args, **kwargs)
             except Exception as e:
-                return jsonify({'error': 'Invalid Firebase token'}), 401
+                error_str = str(e)
+                error_type = type(e).__name__
+                print(f"[Auth] ❌ Firebase token verification failed: {error_type}: {error_str}")
+                
+                # Handle clock skew errors (token used too early/late)
+                # For small clock skews (1-5 seconds), wait and retry
+                if 'clock' in error_str.lower() or 'too early' in error_str.lower() or 'too late' in error_str.lower():
+                    print(f"[Auth] ⚠️ Clock skew detected, checking time difference...")
+                    import re
+                    time_match = re.search(r'(\d+) < (\d+)', error_str)
+                    if time_match:
+                        token_time = int(time_match.group(1))
+                        server_time = int(time_match.group(2))
+                        diff = abs(server_time - token_time)
+                        print(f"[Auth] ⚠️ Time difference: {diff} seconds (token_time={token_time}, server_time={server_time})")
+                        
+                        if diff <= 5:  # Allow up to 5 seconds difference
+                            print(f"[Auth] ⚠️ Small clock skew ({diff}s) detected, waiting {diff + 1} seconds and retrying...")
+                            import time as time_module
+                            time_module.sleep(diff + 1)  # Wait for the time difference + 1 second buffer
+                            try:
+                                print(f"[Auth] Retrying token verification after delay...")
+                                decoded_token = auth.verify_id_token(token)
+                                request.user_id = decoded_token['uid']
+                                print(f"[Auth] ✅ Token verified after delay, User ID: {request.user_id}")
+                                return f(*args, **kwargs)
+                            except Exception as retry_error:
+                                print(f"[Auth] ❌ Retry after delay also failed: {retry_error}")
+                        else:
+                            print(f"[Auth] ❌ Clock skew too large ({diff}s), rejecting token")
+                    else:
+                        print(f"[Auth] ⚠️ Clock skew detected but couldn't parse time difference, waiting 2 seconds and retrying...")
+                        import time as time_module
+                        time_module.sleep(2)
+                        try:
+                            decoded_token = auth.verify_id_token(token)
+                            request.user_id = decoded_token['uid']
+                            print(f"[Auth] ✅ Token verified after delay, User ID: {request.user_id}")
+                            return f(*args, **kwargs)
+                        except Exception as retry_error:
+                            print(f"[Auth] ❌ Retry after delay failed: {retry_error}")
+                
+                return jsonify({'error': 'Invalid Firebase token', 'details': error_str}), 401
         except Exception as e:
+            print(f"[Auth] ❌ Authentication service error: {e}")
             return jsonify({'error': 'Authentication service error'}), 500
     
     return decorated_function

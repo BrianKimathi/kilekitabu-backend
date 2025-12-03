@@ -72,15 +72,20 @@ class Config:
         'https://apitest.cybersource.com' if CYBERSOURCE_ENV == 'sandbox' 
         else 'https://api.cybersource.com'
     )
+    # Flex Sessions API base (for card tokenization capture-context)
+    CYBERSOURCE_FLEX_API_BASE = (
+        'https://testflex.cybersource.com' if CYBERSOURCE_ENV == 'sandbox'
+        else 'https://flex.cybersource.com'
+    )
     CYBERSOURCE_CALLBACK_URL = os.getenv(
         'CYBERSOURCE_CALLBACK_URL',
         f"{BASE_URL}/api/cybersource/webhook"
     )
+    # Optional Node.js helper service for CyberSource (cards + Google Pay)
     CYBERSOURCE_HELPER_BASE_URL = os.getenv(
         'CYBERSOURCE_HELPER_BASE_URL',
-        'https://card-payment.onrender.com'
+        'http://localhost:4000'  # Default to local Node helper; override in .env as needed
     )
-    
     # Validation Rules
     VALIDATION_RULES = {
         'min_amount': 10.0,
