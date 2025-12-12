@@ -33,17 +33,33 @@ class CyberSourceHelperClient:
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
         
+        # Headers to make requests look like legitimate server-to-server API calls
+        # This helps bypass Cloudflare bot protection
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'KileKitabu-Backend/1.0',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+        }
+        
+        # Create a session to maintain cookies (helps with Cloudflare)
+        session = requests.Session()
+        session.headers.update(headers)
+        
         # Wake up Render.com service if it's sleeping (ping health endpoint first)
         # This helps reduce timeouts on the first request after inactivity
         try:
             health_url = f"{self.base_url}/health"
-            requests.get(health_url, timeout=(5, 5))
+            session.get(health_url, timeout=(5, 5))
             print(f"[CyberSourceHelperClient] ✅ Health check successful - service is awake")
         except Exception as health_exc:
             print(f"[CyberSourceHelperClient] ⚠️ Health check failed (service may be waking up): {health_exc}")
             # Continue anyway - the actual request will retry if needed
         
-        # Retry logic for Render.com spin-down issues
+        # Retry logic for Render.com spin-down issues and Cloudflare challenges
         last_exception = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -53,7 +69,25 @@ class CyberSourceHelperClient:
                     print(f"[CyberSourceHelperClient] ⏳ Retry attempt {attempt}/{self.max_retries} after {wait_time}s...")
                     time.sleep(wait_time)
                 
-                response = requests.post(url, json=payload, timeout=self.timeout)
+                response = session.post(url, json=payload, timeout=self.timeout)
+                
+                # Check if Cloudflare challenge page was returned
+                if response.status_code == 429 or response.status_code == 403:
+                    response_text = response.text
+                    if 'challenge-platform' in response_text or 'Just a moment' in response_text:
+                        print(f"[CyberSourceHelperClient] ⚠️ Cloudflare challenge detected on attempt {attempt + 1}")
+                        if attempt < self.max_retries:
+                            # Wait longer for Cloudflare to allow the request
+                            wait_time = 5 * (attempt + 1)
+                            print(f"[CyberSourceHelperClient] ⏳ Waiting {wait_time}s for Cloudflare to allow request...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            raise CyberSourceHelperError(
+                                "Cloudflare protection is blocking server requests. The helper service may need to whitelist server IPs or adjust Cloudflare settings.",
+                                status_code=response.status_code,
+                                response={"raw": response_text[:500]}
+                            )
                 
                 # Success - process response
                 break
