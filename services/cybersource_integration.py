@@ -918,6 +918,140 @@ class CyberSourceClient:
                 'status_code': 500,
             }
     
+    def search_transactions_by_reference(
+        self,
+        reference_code: str,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Search for transactions by reference code using CyberSource Transaction Search API.
+        
+        Args:
+            reference_code: The client reference code used in the payment
+            limit: Maximum number of results to return (default: 10)
+            
+        Returns:
+            Dict with 'ok', 'response' (containing search results), 'status_code', 'error'
+        """
+        print(f"[CyberSourceClient] [TransactionSearch] ========== Searching Transactions ==========")
+        print(f"[CyberSourceClient] [TransactionSearch] Reference Code: {reference_code}")
+        print(f"[CyberSourceClient] [TransactionSearch] Limit: {limit}")
+        
+        # Step 1: Create search request
+        create_search_resource = '/tss/v2/searches'
+        search_query = f'clientReferenceInformation.code:{reference_code}'
+        
+        create_search_payload = {
+            'save': False,  # Don't save the search
+            'name': f'Search_{reference_code}',
+            'timezone': 'UTC',
+            'query': search_query,
+            'offset': 0,
+            'limit': limit,
+            'sort': 'id:desc,submitTimeUtc:desc',  # Most recent first
+        }
+        
+        try:
+            print(f"[CyberSourceClient] [TransactionSearch] 📤 Creating search request...")
+            headers = self._get_headers('POST', create_search_resource, create_search_payload)
+            url = f"{self.api_base}{create_search_resource}"
+            
+            print(f"[CyberSourceClient] [TransactionSearch] 🌐 POST {url}")
+            print(f"[CyberSourceClient] [TransactionSearch] Query: {search_query}")
+            
+            response = requests.post(url, json=create_search_payload, headers=headers, timeout=(10, 30))
+            
+            print(f"[CyberSourceClient] [TransactionSearch] 📥 Create search response: {response.status_code}")
+            
+            if response.status_code not in [200, 201]:
+                error_data = response.json() if response.text else {}
+                print(f"[CyberSourceClient] [TransactionSearch] ❌ Failed to create search: {error_data}")
+                return {
+                    'ok': False,
+                    'error': error_data,
+                    'status_code': response.status_code,
+                }
+            
+            search_result = response.json()
+            search_id = search_result.get('searchId')
+            
+            if not search_id:
+                print(f"[CyberSourceClient] [TransactionSearch] ❌ No searchId in response")
+                return {
+                    'ok': False,
+                    'error': 'No searchId returned from search creation',
+                    'status_code': response.status_code,
+                }
+            
+            print(f"[CyberSourceClient] [TransactionSearch] ✅ Search created: {search_id}")
+            
+            # Step 2: Get search results
+            get_search_resource = f'/tss/v2/searches/{search_id}'
+            
+            print(f"[CyberSourceClient] [TransactionSearch] 📤 Retrieving search results...")
+            headers = self._get_headers('GET', get_search_resource)
+            url = f"{self.api_base}{get_search_resource}"
+            
+            print(f"[CyberSourceClient] [TransactionSearch] 🌐 GET {url}")
+            
+            # Wait a moment for search to complete (CyberSource may need time to process)
+            import time
+            time.sleep(1)
+            
+            response = requests.get(url, headers=headers, timeout=(10, 30))
+            
+            print(f"[CyberSourceClient] [TransactionSearch] 📥 Get results response: {response.status_code}")
+            
+            if response.status_code not in [200, 201]:
+                error_data = response.json() if response.text else {}
+                print(f"[CyberSourceClient] [TransactionSearch] ❌ Failed to get results: {error_data}")
+                return {
+                    'ok': False,
+                    'error': error_data,
+                    'status_code': response.status_code,
+                }
+            
+            results = response.json()
+            transactions = results.get('transactions', [])
+            count = len(transactions)
+            
+            print(f"[CyberSourceClient] [TransactionSearch] ✅ Search completed")
+            print(f"[CyberSourceClient] [TransactionSearch]   - Found {count} transaction(s)")
+            
+            if transactions:
+                for idx, tx in enumerate(transactions, 1):
+                    tx_id = tx.get('id', 'N/A')
+                    tx_status = tx.get('status', 'N/A')
+                    tx_ref = tx.get('clientReferenceInformation', {}).get('code', 'N/A')
+                    print(f"[CyberSourceClient] [TransactionSearch]   [{idx}] ID: {tx_id}, Status: {tx_status}, Ref: {tx_ref}")
+            
+            return {
+                'ok': True,
+                'response': results,
+                'transactions': transactions,
+                'count': count,
+                'status_code': response.status_code,
+            }
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[CyberSourceClient] [TransactionSearch] ❌ Request error: {e}")
+            import traceback
+            print(f"[CyberSourceClient] [TransactionSearch] Traceback: {traceback.format_exc()}")
+            return {
+                'ok': False,
+                'error': str(e),
+                'status_code': 500,
+            }
+        except Exception as e:
+            print(f"[CyberSourceClient] [TransactionSearch] ❌ Unexpected error: {e}")
+            import traceback
+            print(f"[CyberSourceClient] [TransactionSearch] Full traceback: {traceback.format_exc()}")
+            return {
+                'ok': False,
+                'error': str(e),
+                'status_code': 500,
+            }
+    
     def validate_webhook_signature(
         self,
         signature_header: str,

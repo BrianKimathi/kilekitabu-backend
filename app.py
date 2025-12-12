@@ -24,6 +24,7 @@ from routes.cybersource import cybersource_bp
 # from routes.stripe import bp as stripe_bp  # Disabled - using Cybersource
 from routes.cron import bp as cron_bp
 from routes.googlepay import bp as googlepay_bp
+from routes.unified_checkout import bp as unified_checkout_bp
 
 # Initialize logging
 init_logging()
@@ -290,6 +291,7 @@ app.register_blueprint(cybersource_bp)
 # app.register_blueprint(stripe_bp)  # Disabled - using Cybersource
 app.register_blueprint(cron_bp)
 app.register_blueprint(googlepay_bp)
+app.register_blueprint(unified_checkout_bp)
 
 # Health check endpoint
 @app.route('/', methods=['GET'])

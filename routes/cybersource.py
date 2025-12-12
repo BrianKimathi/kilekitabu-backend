@@ -64,6 +64,130 @@ def status():
     return check_payment_status()
 
 
+# Search transactions by reference code (requires authentication)
+@cybersource_bp.route("/search", methods=["GET", "POST"])
+@require_auth
+def search_transactions():
+    """Search for transactions by reference code via Node.js backend."""
+    from flask import request, jsonify
+    from services.cybersource_helper_client import CyberSourceHelperError
+    
+    print(f"[cybersource_search] ========== Search Transactions ==========")
+    
+    # Get reference code from query params or JSON body
+    reference_code = request.args.get('reference_code') or (request.json.get('reference_code') if request.is_json else None)
+    limit = int(request.args.get('limit', 10)) or (request.json.get('limit', 10) if request.is_json else 10)
+    
+    if not reference_code:
+        print(f"[cybersource_search] ❌ No reference_code provided")
+        return jsonify({
+            'success': False,
+            'error': 'reference_code is required'
+        }), 400
+    
+    print(f"[cybersource_search] Reference Code: {reference_code}")
+    print(f"[cybersource_search] Limit: {limit}")
+    
+    # Get CyberSource helper client
+    cybersource_helper = current_app.config.get('cybersource_helper')
+    if not cybersource_helper:
+        print(f"[cybersource_search] ❌ CyberSource helper not configured")
+        return jsonify({
+            'success': False,
+            'error': 'Transaction search is unavailable right now. Please try again later.'
+        }), 503
+    
+    try:
+        print(f"[cybersource_search] 🔍 Searching via Node.js backend...")
+        result = cybersource_helper.search_transactions_by_reference(reference_code, limit=limit)
+        
+        transactions = result.get('transactions', [])
+        count = result.get('count', 0)
+        
+        print(f"[cybersource_search] ✅ Search completed: {count} transaction(s) found")
+        
+        return jsonify({
+            'success': True,
+            'reference_code': reference_code,
+            'count': count,
+            'transactions': transactions,
+            'response': result,
+        }), 200
+    
+    except CyberSourceHelperError as e:
+        error = e.response or str(e)
+        status_code = e.status_code or 500
+        print(f"[cybersource_search] ❌ Search failed: {error}")
+        
+        return jsonify({
+            'success': False,
+            'error': str(error),
+            'reference_code': reference_code,
+        }), status_code
+    
+    except Exception as e:
+        print(f"[cybersource_search] ❌ Unexpected error: {e}")
+        import traceback
+        print(f"[cybersource_search] Traceback: {traceback.format_exc()}")
+        
+        return jsonify({
+            'success': False,
+            'error': 'Search failed',
+        }), 500
+
+
+# Simple webhook logging endpoint (for testing/debugging)
+@cybersource_bp.route("/webhook/log", methods=["POST"])
+def webhook_log():
+    """Simple webhook endpoint that only logs received requests."""
+    from flask import request
+    import json
+    
+    print("=" * 80)
+    print("[WEBHOOK_LOG] ========== Webhook Request Received ==========")
+    print("=" * 80)
+    
+    # Log all headers
+    print("\n[WEBHOOK_LOG] Headers:")
+    print("-" * 80)
+    for key, value in request.headers:
+        print(f"  {key}: {value}")
+    
+    # Log raw body
+    print("\n[WEBHOOK_LOG] Raw Body:")
+    print("-" * 80)
+    raw_body = request.get_data(as_text=True)
+    print(raw_body)
+    
+    # Log parsed JSON (if available)
+    print("\n[WEBHOOK_LOG] Parsed JSON:")
+    print("-" * 80)
+    try:
+        json_data = request.get_json()
+        if json_data:
+            print(json.dumps(json_data, indent=2))
+        else:
+            print("  (No JSON data or unable to parse)")
+    except Exception as e:
+        print(f"  (Error parsing JSON: {e})")
+    
+    # Log request info
+    print("\n[WEBHOOK_LOG] Request Info:")
+    print("-" * 80)
+    print(f"  Method: {request.method}")
+    print(f"  URL: {request.url}")
+    print(f"  Remote Address: {request.remote_addr}")
+    print(f"  Content Type: {request.content_type}")
+    print(f"  Content Length: {request.content_length}")
+    
+    print("\n" + "=" * 80)
+    print("[WEBHOOK_LOG] ========== End of Webhook Log ==========")
+    print("=" * 80 + "\n")
+    
+    # Return success response
+    return jsonify({"status": "logged", "message": "Webhook received and logged"}), 200
+
+
 # Webhook endpoint (no auth - validated by signature)
 @cybersource_bp.route("/webhook", methods=["POST"])
 def webhook():

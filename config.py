@@ -82,9 +82,11 @@ class Config:
         f"{BASE_URL}/api/cybersource/webhook"
     )
     # Optional Node.js helper service for CyberSource (cards + Google Pay)
+    # Defaults to localhost:4000 for local testing
+    # Override with CYBERSOURCE_HELPER_BASE_URL environment variable for production
     CYBERSOURCE_HELPER_BASE_URL = os.getenv(
         'CYBERSOURCE_HELPER_BASE_URL',
-        'https://card-payment-hso8.onrender.com'  # Default to Render deployment; override in .env as needed
+        'http://localhost:4000'  # Default to localhost for local development
     )
     # Validation Rules
     VALIDATION_RULES = {

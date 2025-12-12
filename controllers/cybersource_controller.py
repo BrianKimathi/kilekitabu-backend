@@ -1,11 +1,12 @@
 """CyberSource payment controller."""
 import datetime
 import uuid
-from flask import request, jsonify
+from flask import request, jsonify, current_app
 from functools import wraps
 from firebase_admin import auth, db
 from config import Config
 from services.exchange_rate_service import convert_amount_to_kes, compute_credit_days_from_kes
+from services.cybersource_helper_client import CyberSourceHelperError
 
 
 def require_auth(f):
@@ -81,19 +82,12 @@ def initiate_card_payment():
         }
     }
     """
-    print(f"[cybersource_initiate] ========== Card Payment Initiation (LEGACY RAW CARD) ==========")
-    # NOTE: This legacy endpoint previously proxied to a Node helper service.
-    # The recommended flows are now:
+    print(f"[cybersource_initiate] ========== Card Payment Initiation (RAW CARD) ==========")
+    # NOTE: This endpoint proxies to the Node.js helper service for card payments.
+    # The Node.js service handles direct communication with CyberSource API.
+    # Alternative flows:
     # - Card payments via Flex transientToken: POST /api/cybersource/flex/charge
     # - Google Pay via /api/googlepay/charge (native blob or transientToken)
-    #
-    # To keep the backend focused on FCM + payments with a single Flask stack,
-    # we no longer process raw PANs here. Direct callers should migrate to the
-    # Flex / tokenized flow instead of sending full card details to the backend.
-    return jsonify({
-        'success': False,
-        'error': 'Legacy raw-card endpoint disabled. Please use Flex transientToken via /api/cybersource/flex/charge.'
-    }), 410
     
     # Get user ID from request
     user_id = getattr(request, 'user_id', None)
@@ -240,13 +234,90 @@ def initiate_card_payment():
         print(f"[cybersource_initiate] Firebase error traceback: {traceback.format_exc()}")
         # Continue anyway - we can still process the payment
     
+    # Get CyberSource helper client
+    cybersource_helper = current_app.config.get('cybersource_helper')
+    if not cybersource_helper:
+        print(f"[cybersource_initiate] ❌ CyberSource helper not configured")
+        return jsonify({
+            'success': False,
+            'error': 'Card payments are unavailable right now. Please try again later.'
+        }), 503
+    
     try:
-        # Process payment via CyberSource helper
-        print(f"[cybersource_initiate] 🚀 Initiating CyberSource payment...")
+        # Step 1: Check payer authentication enrollment (3D Secure) via Node.js backend
+        print(f"[cybersource_initiate] 🔐 Checking 3D Secure enrollment via Node.js backend...")
+        print(f"[cybersource_initiate]   - Node.js endpoint: /api/payer-auth/enroll")
+        enrollment_check_payload = {
+            'amount': amount,
+            'currency': currency,
+            'card': {
+                'number': card_number_clean,
+                'expirationMonth': card['expirationMonth'],
+                'expirationYear': card['expirationYear'],
+            },
+            'billingInfo': billing_info,
+            'referenceCode': payment_id,
+        }
+        
+        enrollment_enrolled = False
+        enrollment_step_up_url = None
+        authentication_transaction_id = None
+        
+        try:
+            enrollment_response = cybersource_helper.check_payer_auth_enrollment(enrollment_check_payload)
+            print(f"[cybersource_initiate] ✅ Enrollment check completed via Node.js backend")
+            
+            # Extract enrollment data from response
+            enrollment_status = enrollment_response.get('status', '').upper()
+            consumer_auth_info = enrollment_response.get('consumerAuthenticationInformation', {}) or {}
+            
+            # Extract authentication transaction ID (may be present even if not enrolled)
+            authentication_transaction_id = consumer_auth_info.get('authenticationTransactionId')
+            
+            # Extract step-up URL if challenge is required
+            enrollment_step_up_url = consumer_auth_info.get('stepUpUrl') or enrollment_response.get('stepUpUrl')
+            
+            # Check enrollment status - 'Y' = enrolled, 'N' = not enrolled, 'U' = unavailable
+            veres_enrolled = consumer_auth_info.get('veresEnrolled', '').upper()
+            
+            # Determine if we should use 3D Secure:
+            # 1. If veresEnrolled == 'Y' (card is enrolled)
+            # 2. If status is AUTHENTICATION_SUCCESSFUL and we have authenticationTransactionId
+            enrollment_enrolled = (
+                veres_enrolled == 'Y' or 
+                (enrollment_status == 'AUTHENTICATION_SUCCESSFUL' and authentication_transaction_id is not None)
+            )
+            
+            print(f"[cybersource_initiate] 🔐 Enrollment check result:")
+            print(f"[cybersource_initiate]   - Status: {enrollment_status}")
+            print(f"[cybersource_initiate]   - Veres Enrolled: {veres_enrolled} (Y=enrolled, N=not enrolled, U=unavailable)")
+            print(f"[cybersource_initiate]   - Enrolled: {enrollment_enrolled}")
+            if enrollment_step_up_url:
+                print(f"[cybersource_initiate]   - Step-up URL: {enrollment_step_up_url[:80]}...")
+            if authentication_transaction_id:
+                print(f"[cybersource_initiate]   - Auth Transaction ID: {authentication_transaction_id}")
+            
+            if enrollment_status == 'AUTHENTICATION_SUCCESSFUL' and authentication_transaction_id:
+                print(f"[cybersource_initiate]   - ✅ Authentication successful, will use 3D Secure")
+        except CyberSourceHelperError as enroll_err:
+            error_status = getattr(enroll_err, 'status_code', None)
+            if error_status == 404:
+                print(f"[cybersource_initiate] ⚠️ Enrollment endpoint not found (404) - Node.js backend may need update")
+                print(f"[cybersource_initiate]   - Endpoint: /api/payer-auth/enroll")
+                print(f"[cybersource_initiate]   - Note: Ensure Node.js backend is deployed with latest code")
+            else:
+                print(f"[cybersource_initiate] ⚠️ Enrollment check failed (proceeding without 3D Secure): {enroll_err}")
+            # Continue without 3D Secure if enrollment check fails
+            enrollment_enrolled = False
+        
+        # Step 2: Process payment via Node.js backend
+        print(f"[cybersource_initiate] 🚀 Processing payment via Node.js backend...")
+        print(f"[cybersource_initiate]   - Node.js endpoint: /api/cards/pay")
         print(f"[cybersource_initiate]   - Reference code: {payment_id}")
         print(f"[cybersource_initiate]   - Amount: {amount} {currency}")
         print(f"[cybersource_initiate]   - Card: ****{card_number_clean[-4:] if len(card_number_clean) >= 4 else 'N/A'}")
         print(f"[cybersource_initiate]   - Expiry: {card['expirationMonth']}/{card['expirationYear']}")
+        print(f"[cybersource_initiate]   - 3D Secure: {'ENABLED' if enrollment_enrolled else 'NOT REQUIRED'}")
         
         helper_payload = {
             'amount': amount,
@@ -263,8 +334,29 @@ def initiate_card_payment():
         if card.get('cvv'):
             helper_payload['card']['securityCode'] = card.get('cvv')
         
+        # Include 3D Secure authentication data if we have authenticationTransactionId
+        # This applies when:
+        # - Card is enrolled (veresEnrolled='Y') and we have authenticationTransactionId
+        # - Status is AUTHENTICATION_SUCCESSFUL and we have authenticationTransactionId (frictionless)
+        # 
+        # Note: If stepUpUrl is provided, user must complete challenge first
+        # For now, we proceed with authenticationTransactionId if available
+        if authentication_transaction_id:
+            helper_payload['authenticationTransactionId'] = authentication_transaction_id
+            if enrollment_step_up_url:
+                print(f"[cybersource_initiate] ⚠️ 3D Secure CHALLENGE URL available (proceeding with auth transaction ID)")
+                print(f"[cybersource_initiate]   - Step-up URL: {enrollment_step_up_url}")
+            else:
+                print(f"[cybersource_initiate] ✅ Using 3D Secure authentication (frictionless flow)")
+            print(f"[cybersource_initiate]   - Authentication Transaction ID: {authentication_transaction_id}")
+        elif enrollment_enrolled:
+            print(f"[cybersource_initiate] ⚠️ Card enrolled but no authenticationTransactionId available")
+        
         try:
+            # Payment will use createCardPaymentWithAuth if authenticationTransactionId is provided
+            # Node.js backend automatically routes to authenticated flow when auth data is present
             response_data = cybersource_helper.create_card_payment(helper_payload)
+            print(f"[cybersource_initiate] ✅ Payment request sent to Node.js backend")
             helper_ok = True
             helper_error = None
             helper_status = 200
@@ -273,7 +365,7 @@ def initiate_card_payment():
             helper_ok = False
             helper_error = helper_err.response or helper_err.args[0]
             helper_status = helper_err.status_code or 500
-            print(f"[cybersource_initiate] ❌ Helper error: {helper_err}")
+            print(f"[cybersource_initiate] ❌ Node.js backend error: {helper_err}")
         
         print(f"[cybersource_initiate] 📥 CyberSource helper response received")
         print(f"[cybersource_initiate]   - Success: {helper_ok}")
@@ -367,8 +459,10 @@ def initiate_card_payment():
                     print(f"[cybersource_initiate]   - Credit days to add: {credit_days} (amount: {rounded_kes:.2f} KES / rate: {daily_rate} KES/day)")
                     print(f"[cybersource_initiate]   - New credit balance: {new_credit} days")
                     
+                    # Track monthly spend in KES so everything is on the same unit
+                    month_key = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m')
                     updated_monthly = latest_user_data.get('monthly_paid', {}) or {}
-                    latest_month_spend = float(updated_monthly.get(month_key, 0))
+                    latest_month_spend = float(updated_monthly.get(month_key, 0) or 0)
                     # Store monthly spend in KES (amount_in_kes already converted if USD)
                     latest_month_spend += amount_in_kes
                     updated_monthly[month_key] = latest_month_spend
@@ -399,6 +493,52 @@ def initiate_card_payment():
                 print(f"[cybersource_initiate] ⚠️ Failed to update records: {e}")
                 import traceback
                 print(f"[cybersource_initiate] Update error traceback: {traceback.format_exc()}")
+            
+            # Search for payment by reference code to verify status via Node.js backend
+            print(f"[cybersource_initiate] 🔍 Searching for payment by reference code: {payment_id}")
+            print(f"[cybersource_initiate]   - Using Node.js backend via cybersource_helper")
+            print(f"[cybersource_initiate]   - Helper client type: {type(cybersource_helper).__name__ if cybersource_helper else 'None'}")
+            try:
+                if cybersource_helper:
+                    print(f"[cybersource_initiate]   - Helper client available, calling search_transactions_by_reference...")
+                    print(f"[cybersource_initiate]   - Helper client has method: {hasattr(cybersource_helper, 'search_transactions_by_reference')}")
+                    search_result = cybersource_helper.search_transactions_by_reference(payment_id, limit=1)
+                    print(f"[cybersource_initiate]   - Search result received from helper client")
+                    print(f"[cybersource_initiate]   - Search result keys: {list(search_result.keys()) if isinstance(search_result, dict) else 'Not a dict'}")
+                    transactions = search_result.get('transactions', [])
+                    count = search_result.get('count', 0)
+                    
+                    if count > 0 and transactions:
+                        found_tx = transactions[0]
+                        found_status = found_tx.get('status', 'UNKNOWN')
+                        found_id = found_tx.get('id', 'N/A')
+                        print(f"[cybersource_initiate] ✅ Payment verified via transaction search")
+                        print(f"[cybersource_initiate]   - Found Transaction ID: {found_id}")
+                        print(f"[cybersource_initiate]   - Verified Status: {found_status}")
+                        
+                        # Update payment record with verified status if different
+                        if found_status != status and found_status in ['AUTHORIZED', 'CAPTURED', 'COMPLETED']:
+                            print(f"[cybersource_initiate] ⚠️ Status mismatch - updating to verified status")
+                            try:
+                                payments_ref.child(payment_id).update({
+                                    'verified_status': found_status,
+                                    'verified_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                })
+                            except Exception as update_err:
+                                print(f"[cybersource_initiate] ⚠️ Failed to update verified status: {update_err}")
+                    else:
+                        print(f"[cybersource_initiate] ⚠️ No transactions found in search (may need time to index)")
+                        print(f"[cybersource_initiate]   - Count: {count}")
+                else:
+                    print(f"[cybersource_initiate] ⚠️ CyberSource helper not available for search")
+            except CyberSourceHelperError as search_err:
+                search_error = search_err.response or str(search_err)
+                print(f"[cybersource_initiate] ⚠️ Transaction search failed: {search_error}")
+            except Exception as search_err:
+                print(f"[cybersource_initiate] ⚠️ Error during transaction search: {search_err}")
+                import traceback
+                print(f"[cybersource_initiate] Search error traceback: {traceback.format_exc()}")
+                # Don't fail the payment if search fails - payment already succeeded
             
             return jsonify({
                 'success': True,
@@ -526,10 +666,15 @@ def handle_webhook():
     """
     Handle CyberSource webhook notifications.
     
-    Webhook events:
+    Supported webhook events:
     - payByLink.merchant.payment: Customer completed payment via Pay by Link
     - payments.capture.status.accepted: Payment capture accepted
     - payments.capture.status.updated: Payment capture status updated
+    
+    Decision Manager (Fraud Management) events:
+    - risk.profile.decision.reject: Transaction rejected by fraud profile
+    - risk.casemanagement.decision.reject: Fraud case rejected
+    - risk.casemanagement.decision.accept: Fraud case accepted (after review)
     """
     print(f"[cybersource_webhook] ========== Webhook Received ==========")
     
@@ -663,6 +808,135 @@ def handle_webhook():
                 print(f"[cybersource_webhook] Payment capture event: {event_type}")
                 # Similar processing logic as above
                 pass
+            
+            # Decision Manager (Fraud Management) Events
+            elif event_type == 'risk.profile.decision.reject':
+                # Transaction rejected by fraud profile
+                print(f"[cybersource_webhook] ⚠️ Fraud Decision: Transaction REJECTED")
+                transaction_id = data.get('id') or data.get('transactionId')
+                reference_code = data.get('clientReferenceInformation', {}).get('code') or data.get('referenceCode')
+                risk_score = data.get('riskInformation', {}).get('score', {}).get('value')
+                risk_factors = data.get('riskInformation', {}).get('factors', [])
+                
+                print(f"[cybersource_webhook]   Transaction ID: {transaction_id}")
+                print(f"[cybersource_webhook]   Reference Code: {reference_code}")
+                print(f"[cybersource_webhook]   Risk Score: {risk_score}")
+                print(f"[cybersource_webhook]   Risk Factors: {risk_factors}")
+                
+                # Find and update payment record to mark as fraud-rejected
+                if reference_code and reference_code.startswith('CS_'):
+                    try:
+                        user_id_part = reference_code.split('_')[1]
+                        users_ref = db.reference('registeredUser')
+                        all_users = users_ref.get() or {}
+                        
+                        matched_user_id = None
+                        for uid, user_data in all_users.items():
+                            if uid.startswith(user_id_part):
+                                matched_user_id = uid
+                                break
+                        
+                        if matched_user_id:
+                            payments_ref = db.reference(f'payments/{matched_user_id}')
+                            payment_record = payments_ref.child(reference_code).get()
+                            
+                            if payment_record:
+                                payments_ref.child(reference_code).update({
+                                    'status': 'FRAUD_REJECTED',
+                                    'fraud_decision': 'REJECT',
+                                    'fraud_score': risk_score,
+                                    'fraud_factors': risk_factors,
+                                    'webhook_data': data,
+                                    'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                })
+                                print(f"[cybersource_webhook] ✅ Payment marked as FRAUD_REJECTED")
+                    except Exception as e:
+                        print(f"[cybersource_webhook] ❌ Error processing fraud rejection: {e}")
+            
+            elif event_type == 'risk.casemanagement.decision.reject':
+                # Fraud case rejected
+                print(f"[cybersource_webhook] ⚠️ Fraud Case Decision: REJECTED")
+                case_id = data.get('id') or data.get('caseId')
+                transaction_id = data.get('transactionId')
+                reference_code = data.get('clientReferenceInformation', {}).get('code') or data.get('referenceCode')
+                
+                print(f"[cybersource_webhook]   Case ID: {case_id}")
+                print(f"[cybersource_webhook]   Transaction ID: {transaction_id}")
+                print(f"[cybersource_webhook]   Reference Code: {reference_code}")
+                
+                # Update payment record if found
+                if reference_code and reference_code.startswith('CS_'):
+                    try:
+                        user_id_part = reference_code.split('_')[1]
+                        users_ref = db.reference('registeredUser')
+                        all_users = users_ref.get() or {}
+                        
+                        matched_user_id = None
+                        for uid, user_data in all_users.items():
+                            if uid.startswith(user_id_part):
+                                matched_user_id = uid
+                                break
+                        
+                        if matched_user_id:
+                            payments_ref = db.reference(f'payments/{matched_user_id}')
+                            payment_record = payments_ref.child(reference_code).get()
+                            
+                            if payment_record:
+                                payments_ref.child(reference_code).update({
+                                    'status': 'FRAUD_CASE_REJECTED',
+                                    'fraud_case_id': case_id,
+                                    'fraud_decision': 'CASE_REJECT',
+                                    'webhook_data': data,
+                                    'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                })
+                                print(f"[cybersource_webhook] ✅ Payment marked as FRAUD_CASE_REJECTED")
+                    except Exception as e:
+                        print(f"[cybersource_webhook] ❌ Error processing fraud case rejection: {e}")
+            
+            elif event_type == 'risk.casemanagement.decision.accept':
+                # Fraud case accepted (transaction approved after review)
+                print(f"[cybersource_webhook] ✅ Fraud Case Decision: ACCEPTED")
+                case_id = data.get('id') or data.get('caseId')
+                transaction_id = data.get('transactionId')
+                reference_code = data.get('clientReferenceInformation', {}).get('code') or data.get('referenceCode')
+                
+                print(f"[cybersource_webhook]   Case ID: {case_id}")
+                print(f"[cybersource_webhook]   Transaction ID: {transaction_id}")
+                print(f"[cybersource_webhook]   Reference Code: {reference_code}")
+                
+                # Update payment record - case was reviewed and accepted
+                if reference_code and reference_code.startswith('CS_'):
+                    try:
+                        user_id_part = reference_code.split('_')[1]
+                        users_ref = db.reference('registeredUser')
+                        all_users = users_ref.get() or {}
+                        
+                        matched_user_id = None
+                        for uid, user_data in all_users.items():
+                            if uid.startswith(user_id_part):
+                                matched_user_id = uid
+                                break
+                        
+                        if matched_user_id:
+                            payments_ref = db.reference(f'payments/{matched_user_id}')
+                            payment_record = payments_ref.child(reference_code).get()
+                            
+                            if payment_record:
+                                payments_ref.child(reference_code).update({
+                                    'fraud_case_id': case_id,
+                                    'fraud_decision': 'CASE_ACCEPT',
+                                    'fraud_reviewed': True,
+                                    'webhook_data': data,
+                                    'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                })
+                                print(f"[cybersource_webhook] ✅ Payment fraud case ACCEPTED after review")
+                    except Exception as e:
+                        print(f"[cybersource_webhook] ❌ Error processing fraud case acceptance: {e}")
+            
+            else:
+                # Unknown event type - log for debugging
+                print(f"[cybersource_webhook] ⚠️ Unknown event type: {event_type}")
+                print(f"[cybersource_webhook]   Data: {data}")
         
         print(f"[cybersource_webhook] ✅ Webhook processed successfully")
         return jsonify({'status': 'success'}), 200
