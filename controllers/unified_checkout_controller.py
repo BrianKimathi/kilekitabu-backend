@@ -83,7 +83,7 @@ def unified_checkout_capture_context():
         complete_mandate_type = data.get('completeMandateType', 'CAPTURE')  # 'CAPTURE', 'AUTH', or 'PREFER_AUTH'
         enable_decision_manager = data.get('enableDecisionManager', True)
         enable_consumer_auth = data.get('enableConsumerAuthentication', True)
-        
+
         print(f"[UC:CAPTURE_CONTEXT] ✅ STEP 4: Parameters extracted")
         print(f"[UC:CAPTURE_CONTEXT]   - targetOrigins: {target_origins}")
         print(f"[UC:CAPTURE_CONTEXT]   - allowedPaymentTypes: {allowed_types}")

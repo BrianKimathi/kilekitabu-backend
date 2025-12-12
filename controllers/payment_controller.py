@@ -220,7 +220,7 @@ class PaymentController:
                 'phone_e164': phone,
                 'month_key': month_key,
                 'month_spend_before': month_spend,
-                'monthly_cap_max': max_monthly_total
+                'monthly_cap_max': self.config.MONTHLY_CAP_KES
             }
             self.db.reference(f'payments/{payment_id}').set(payment_info)
             print(f"[mpesa_initiate] payment created id={payment_id} credit_days={credit_days}")
