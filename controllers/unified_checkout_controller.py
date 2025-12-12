@@ -168,9 +168,28 @@ def unified_checkout_capture_context():
         print(f"[UC:CAPTURE_CONTEXT] Status code: {helper_err.status_code}")
         print(f"[UC:CAPTURE_CONTEXT] Error response: {json.dumps(helper_err.response, indent=2) if helper_err.response else 'None'}")
         print(f"[UC:CAPTURE_CONTEXT] ========== FAILED: Helper error ==========")
+        
+        # Check if this is a Cloudflare challenge
+        error_response = helper_err.response or {}
+        error_raw = error_response.get('raw', '') if isinstance(error_response, dict) else str(error_response)
+        is_cloudflare_challenge = (
+            helper_err.status_code in [429, 403] and 
+            ('challenge-platform' in error_raw or 'Just a moment' in error_raw)
+        )
+        
+        if is_cloudflare_challenge:
+            error_message = (
+                'Cloudflare protection is blocking the payment service. '
+                'Please configure Cloudflare to allow API requests from mobile apps, '
+                'or whitelist the helper service IP addresses.'
+            )
+        else:
+            error_message = 'capture-context failed'
+        
         return jsonify({
-            'error': 'capture-context failed',
+            'error': error_message,
             'details': helper_err.response or helper_err.args[0],
+            'status_code': helper_err.status_code,
         }), helper_err.status_code or 500
     except Exception as e:
         import traceback
